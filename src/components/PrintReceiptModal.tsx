@@ -87,17 +87,25 @@ export const PrintReceiptModal: React.FC<PrintReceiptModalProps> = ({
           {dispenseRecord && (
             <div className="space-y-4 text-xs md:text-sm leading-relaxed">
               {/* Box of Key Identifiers */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 p-3.5 bg-slate-50 rounded-xl border border-slate-400 font-mono">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 p-3.5 bg-slate-50 rounded-xl border border-slate-400 font-mono">
                 <div>
-                  <span className="font-bold text-slate-600 block text-xs">رقم الشهادة (إن وجد):</span>
+                  <span className="font-bold text-slate-600 block text-xs">رقم الشهادة:</span>
                   <span className="text-base font-black text-slate-900">
                     {dispenseRecord.certificateNumber || 'غير محدد'}
                   </span>
                 </div>
                 <div>
-                  <span className="font-bold text-slate-600 block text-xs">رقم الإيصال / السداد:</span>
+                  <span className="font-bold text-slate-600 block text-xs">رقم الإيصال:</span>
                   <span className="text-base font-black text-blue-900">
                     {dispenseRecord.healthCardReceiptNumber || '—'}
+                  </span>
+                </div>
+                <div>
+                  <span className="font-bold text-slate-600 block text-xs">المبلغ المورّد:</span>
+                  <span className="text-base font-black text-emerald-900">
+                    {dispenseRecord.paymentAmount !== undefined && dispenseRecord.paymentAmount !== null
+                      ? `${dispenseRecord.paymentAmount} ج.م`
+                      : '—'}
                   </span>
                 </div>
                 <div>
@@ -107,7 +115,7 @@ export const PrintReceiptModal: React.FC<PrintReceiptModalProps> = ({
                   </span>
                 </div>
                 <div>
-                  <span className="font-bold text-slate-600 block text-xs">الموظف القائم بالصرف:</span>
+                  <span className="font-bold text-slate-600 block text-xs">الموظف الصارف:</span>
                   <span className="text-sm font-black text-emerald-900">
                     {dispenseRecord.dispensedBy}
                   </span>
@@ -121,25 +129,29 @@ export const PrintReceiptModal: React.FC<PrintReceiptModalProps> = ({
                   <span className="font-black text-base text-slate-900">{dispenseRecord.beneficiaryName}</span>
                 </div>
 
-                {(dispenseRecord.dispenseEventType || dispenseRecord.dispenseType) && (
-                  <div className="flex justify-between border-b border-slate-200 pb-1.5 text-xs">
-                    <span className="font-bold text-slate-700">نوع واقعة الصرف:</span>
-                    <span className="font-bold text-emerald-900 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                      {dispenseRecord.dispenseEventType || (
-                        dispenseRecord.dispenseType === 'birth_male' ? 'قيد ولادة - ذكر' :
-                        dispenseRecord.dispenseType === 'birth_female' ? 'قيد ولادة - أنثى' :
-                        dispenseRecord.dispenseType === 'death' ? 'قيد وفاة' :
-                        dispenseRecord.dispenseType === 'health_card_male' ? 'بطاقة صحية ذكور' :
-                        dispenseRecord.dispenseType === 'health_card_female' ? 'بطاقة صحية إناث' :
-                        'صرف مستندات رسمي'
-                      )}
-                    </span>
-                  </div>
-                )}
+                <div className="flex justify-between border-b border-slate-200 pb-1.5 text-xs">
+                  <span className="font-bold text-slate-700">نوع واقعة الصرف:</span>
+                  <span className="font-bold text-emerald-900 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                    {dispenseRecord.dispenseEventType || (
+                      dispenseRecord.dispenseType === 'birth_male' ? 'قيد ولادة - ذكر' :
+                      dispenseRecord.dispenseType === 'birth_female' ? 'قيد ولادة - أنثى' :
+                      dispenseRecord.dispenseType === 'death' ? 'قيد وفاة' :
+                      dispenseRecord.dispenseType === 'health_card_male' ? 'بطاقة صحية ذكور' :
+                      dispenseRecord.dispenseType === 'health_card_female' ? 'بطاقة صحية إناث' :
+                      'صرف مستندات رسمي'
+                    )}
+                  </span>
+                </div>
 
-                {/* Optional historical fields if present */}
-                {(dispenseRecord.fatherName || dispenseRecord.address || dispenseRecord.eventDate) && (
+                {/* Extended fields */}
+                {(dispenseRecord.gender || dispenseRecord.fatherName || dispenseRecord.motherName || dispenseRecord.address || dispenseRecord.eventDate) && (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-slate-700 pt-1">
+                    {dispenseRecord.gender && (
+                      <div>
+                        <span className="font-bold">النوع: </span>
+                        <span>{dispenseRecord.gender === 'male' ? 'ذكر' : dispenseRecord.gender === 'female' ? 'أنثى' : 'غير محدد'}</span>
+                      </div>
+                    )}
                     {dispenseRecord.eventDate && (
                       <div>
                         <span className="font-bold">تاريخ الواقعة: </span>
@@ -150,6 +162,12 @@ export const PrintReceiptModal: React.FC<PrintReceiptModalProps> = ({
                       <div>
                         <span className="font-bold">اسم الأب: </span>
                         <span>{dispenseRecord.fatherName}</span>
+                      </div>
+                    )}
+                    {dispenseRecord.motherName && (
+                      <div>
+                        <span className="font-bold">اسم الأم: </span>
+                        <span>{dispenseRecord.motherName}</span>
                       </div>
                     )}
                     {dispenseRecord.address && (

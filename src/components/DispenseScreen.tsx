@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { AppDatabase, DispenseRecord, DispenseType, StockCategory } from '../types';
 import { addDispenseRecord, updateDispenseRecord, deleteDispenseRecord } from '../storage/db';
 import { EditDispenseModal } from './EditDispenseModal';
+import { getDispenseTypeDisplay } from '../services/reportService';
 import { 
   FileCheck2, 
   Baby, 
@@ -24,7 +25,8 @@ import {
   Pencil,
   Trash2,
   Receipt,
-  Tag
+  Tag,
+  DollarSign
 } from 'lucide-react';
 
 interface DispenseScreenProps {
@@ -160,6 +162,8 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
   const [certificateNumber, setCertificateNumber] = useState('');
   // 4. رقم الإيصال (خاصة عند صرف بطاقة صحية)
   const [healthCardReceiptNumber, setHealthCardReceiptNumber] = useState('');
+  // 4.1 المبلغ المحصل / المورّد (ج.م)
+  const [paymentAmount, setPaymentAmount] = useState('');
   // 5. نوع واقعة الصرف
   const [dispenseEventType, setDispenseEventType] = useState('قيد ولادة - إصدار أول مرة');
   // 6. خانة للملاحظات
@@ -187,6 +191,7 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
   const handleSaveEditRecord = (id: string, updates: Partial<DispenseRecord>) => {
     const updatedDb = updateDispenseRecord(id, updates);
     onDatabaseUpdate(updatedDb);
+    alert('تم حفظ التعديلات بنجاح وتحديث الرصيد وسجل الوثائق المنصرفة.');
   };
 
   // Handle clicking a document card in single-select mode
@@ -308,6 +313,11 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
       else if (singleCat === 'late_reg_over_year') primaryType = 'late_reg_over_year';
     }
 
+    const numericPayment =
+      paymentAmount.trim() !== '' && !isNaN(Number(paymentAmount))
+        ? Number(paymentAmount)
+        : undefined;
+
     const { db: updatedDb, record } = addDispenseRecord({
       dispenseType: primaryType,
       date: dispenseDate,
@@ -315,6 +325,7 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
       beneficiaryName: beneficiaryName.trim(),
       certificateNumber: certificateNumber.trim() || undefined,
       healthCardReceiptNumber: healthCardReceiptNumber.trim() || undefined,
+      paymentAmount: numericPayment,
       dispenseEventType: dispenseEventType.trim() || undefined,
       notes: notes.trim() || undefined,
       itemsDeducted: itemsToDeduct,
@@ -329,6 +340,7 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
     setBeneficiaryName('');
     setCertificateNumber('');
     setHealthCardReceiptNumber('');
+    setPaymentAmount('');
     setNotes('');
 
     // Scroll to top
@@ -343,6 +355,7 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
       r.beneficiaryName.toLowerCase().includes(s) ||
       (r.certificateNumber && r.certificateNumber.toLowerCase().includes(s)) ||
       (r.healthCardReceiptNumber && r.healthCardReceiptNumber.toLowerCase().includes(s)) ||
+      (r.paymentAmount !== undefined && String(r.paymentAmount).includes(s)) ||
       (r.dispenseEventType && r.dispenseEventType.toLowerCase().includes(s)) ||
       (r.notes && r.notes.toLowerCase().includes(s)) ||
       r.date.includes(s)
@@ -691,6 +704,59 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
                 </span>
               </div>
 
+              {/* FIELD 4.1: المبلغ الذي تم توريده / تحصيله للخزينة */}
+              <div
+                className={`p-3.5 rounded-xl border shadow-xs transition ${
+                  isHealthCardSelected
+                    ? 'bg-blue-50/70 border-blue-400 ring-2 ring-blue-100'
+                    : 'bg-white border-slate-200'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block font-bold text-slate-900">
+                    المبلغ الذي تم توريده للخزينة (ج.م) {isHealthCardSelected ? '(إلزامي للبطاقة الصحية)' : '(إن وجد)'}
+                  </label>
+                  {isHealthCardSelected ? (
+                    <span className="text-[11px] font-bold text-blue-800 bg-blue-100 px-2 py-0.5 rounded border border-blue-200">
+                      توريد بطاقة صحية
+                    </span>
+                  ) : (
+                    <span className="text-[11px] text-slate-400">
+                      رسوم توريد رسمية
+                    </span>
+                  )}
+                </div>
+                <div className="relative">
+                  <DollarSign
+                    className={`w-4 h-4 absolute right-3 top-3 ${
+                      isHealthCardSelected ? 'text-blue-600' : 'text-slate-400'
+                    }`}
+                  />
+                  <input
+                    type="number"
+                    step="any"
+                    min="0"
+                    placeholder={
+                      isHealthCardSelected
+                        ? 'مثال: 50 (المبلغ المورّد بقسيمة سداد البطاقة الصحية)'
+                        : 'المبلغ بالجنيه المصري إن وجد'
+                    }
+                    value={paymentAmount}
+                    onChange={(e) => setPaymentAmount(e.target.value)}
+                    className={`w-full pr-9 pl-3 py-2 rounded-xl border font-mono font-bold text-slate-900 ${
+                      isHealthCardSelected
+                        ? 'border-blue-300 focus:border-blue-600 focus:ring-1 focus:ring-blue-600 bg-white'
+                        : 'border-slate-300 focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600'
+                    }`}
+                  />
+                </div>
+                <span className="text-[11px] text-slate-500 mt-1 block">
+                  {isHealthCardSelected
+                    ? 'المبلغ المالي المورّد لحساب البطاقة الصحية، ويدرج مباشرة بالإحصائيات والبيان المالي والشهري.'
+                    : 'المبلغ المحصل أو المورّد بموجب إيصال السداد (يظهر بالإحصائيات والبيان الشهري).'}
+                </span>
+              </div>
+
               {/* FIELD: النوع / الجنس (ذكر أو أنثى) */}
               <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs">
                 <label className="block font-bold text-slate-900 mb-1">
@@ -891,6 +957,7 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
                   <th className="py-3 px-3">المستندات والأصناف المصروفة</th>
                   <th className="py-3 px-3">رقم الشهادة</th>
                   <th className="py-3 px-3">رقم الإيصال</th>
+                  <th className="py-3 px-3 font-mono">المبلغ المورّد</th>
                   <th className="py-3 px-3">الملاحظات</th>
                   <th className="py-3 px-3">الموظف القائم بالصرف</th>
                   <th className="py-3 px-3 text-center">الإجراءات والطباعة</th>
@@ -906,25 +973,14 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
                       {r.beneficiaryName}
                     </td>
                     <td className="py-3 px-3 whitespace-nowrap">
-                      {r.dispenseEventType ? (
-                        <span className="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-bold">
-                          {r.dispenseEventType}
-                        </span>
-                      ) : r.dispenseType === 'birth_male' ? (
-                        <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-800 border border-blue-200 text-xs font-semibold">
-                          مولود ذكر
-                        </span>
-                      ) : r.dispenseType === 'birth_female' ? (
-                        <span className="px-2 py-0.5 rounded-md bg-pink-50 text-pink-800 border border-pink-200 text-xs font-semibold">
-                          مولود أنثى
-                        </span>
-                      ) : r.dispenseType === 'death' ? (
-                        <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-800 border border-slate-300 text-xs font-semibold">
-                          واقعة وفاة
-                        </span>
-                      ) : (
-                        <span className="text-slate-400">—</span>
-                      )}
+                      {(() => {
+                        const typeInfo = getDispenseTypeDisplay(r);
+                        return (
+                          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-xs font-bold border ${typeInfo.badgeClass}`}>
+                            <span>{r.dispenseEventType || typeInfo.label}</span>
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td className="py-3 px-3">
                       <div className="flex flex-wrap gap-1">
@@ -950,6 +1006,15 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
                       {r.healthCardReceiptNumber ? (
                         <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-800 border border-blue-200 text-xs font-bold">
                           {r.healthCardReceiptNumber}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400 font-normal">—</span>
+                      )}
+                    </td>
+                    <td className="py-3 px-3 font-mono font-bold text-emerald-800 whitespace-nowrap">
+                      {r.paymentAmount !== undefined && r.paymentAmount !== null ? (
+                        <span className="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-bold font-mono">
+                          {r.paymentAmount} ج.م
                         </span>
                       ) : (
                         <span className="text-slate-400 font-normal">—</span>
@@ -1001,6 +1066,7 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
 
       {/* EDIT DISPENSE MODAL */}
       <EditDispenseModal
+        key={editingRecord?.id || 'none'}
         record={editingRecord}
         stocks={db.stocks}
         onClose={() => setEditingRecord(null)}

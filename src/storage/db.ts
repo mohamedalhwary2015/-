@@ -698,10 +698,24 @@ export function updateDispenseRecord(
     });
   }
 
-  db.dispenseRecords[recordIndex] = {
+  const updatedRecord: DispenseRecord = {
     ...oldRecord,
     ...updates,
+    syncStatus: 'pending',
   };
+
+  db.dispenseRecords[recordIndex] = updatedRecord;
+
+  // Enqueue for central idempotent synchronization
+  enqueueSyncItem({
+    transactionId: updatedRecord.transactionId || updatedRecord.id,
+    deviceId: updatedRecord.deviceId || getOrCreateDeviceId(),
+    userId: updatedRecord.dispensedBy || 'كاتب صحة سفلاق',
+    operationType: 'DISPENSE',
+    tableName: 'dispenseRecords',
+    recordId: updatedRecord.id,
+    payload: updatedRecord,
+  }).catch((err) => console.warn('Enqueue update dispense notice:', err));
 
   saveDatabase(db);
   return db;

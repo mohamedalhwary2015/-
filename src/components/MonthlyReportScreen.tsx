@@ -4,6 +4,14 @@ import { exportToCSV } from '../storage/db';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import {
+  normalizeGender,
+  isActualBirthRegistration,
+  isDeathRegistration,
+  getDispensedHealthCards,
+  getDispenseTypeDisplay,
+  isPureHealthCardDispense,
+} from '../services/reportService';
+import {
   Calendar,
   Download,
   Printer,
@@ -23,7 +31,8 @@ import {
   Search,
   Layers,
   ArrowRightLeft,
-  Info
+  Info,
+  DollarSign
 } from 'lucide-react';
 
 interface MonthlyReportScreenProps {
@@ -112,39 +121,21 @@ export const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
     return db.supplyTransactions.filter((s) => s.date.startsWith(monthStr));
   }, [db.supplyTransactions, monthStr]);
 
-  // 1. BIRTHS CALCULATIONS (إجمالي المواليد، ذكور، إناث)
+  // 1. BIRTHS CALCULATIONS (إجمالي المواليد الفعلية فقط - لا تحتسب البطاقات الصحية المنفردة كمواليد)
   const birthsData = useMemo(() => {
-    const birthRecords = monthDispenses.filter((r) => {
-      const hasBirthType =
-        r.dispenseType === 'birth_male' ||
-        r.dispenseType === 'birth_female' ||
-        r.dispenseType === 'birth_certificate' ||
-        r.dispenseType === 'birth_notification' ||
-        r.dispenseType === 'health_card_male' ||
-        r.dispenseType === 'health_card_female';
-
-      const hasBirthItem = r.itemsDeducted?.some(
-        (i) =>
-          i.stockCategory === 'birth_certificates' ||
-          i.stockCategory === 'birth_notifications' ||
-          i.stockCategory === 'health_cards_male' ||
-          i.stockCategory === 'health_cards_female'
-      );
-
-      return hasBirthType || hasBirthItem;
-    });
+    const birthRecords = monthDispenses.filter((r) => isActualBirthRegistration(r));
 
     const males = birthRecords.filter((r) => {
-      if (r.gender === 'male') return true;
-      if (r.dispenseType === 'birth_male' || r.dispenseType === 'health_card_male') return true;
-      if (r.itemsDeducted?.some((i) => i.stockCategory === 'health_cards_male' && i.quantity > 0)) return true;
+      const g = normalizeGender(r.gender);
+      if (g === 'male') return true;
+      if (g === 'unknown' && r.dispenseType === 'birth_male') return true;
       return false;
     });
 
     const females = birthRecords.filter((r) => {
-      if (r.gender === 'female') return true;
-      if (r.dispenseType === 'birth_female' || r.dispenseType === 'health_card_female') return true;
-      if (r.itemsDeducted?.some((i) => i.stockCategory === 'health_cards_female' && i.quantity > 0)) return true;
+      const g = normalizeGender(r.gender);
+      if (g === 'female') return true;
+      if (g === 'unknown' && r.dispenseType === 'birth_female') return true;
       return false;
     });
 
@@ -163,31 +154,20 @@ export const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
     };
   }, [monthDispenses]);
 
-  // 2. DEATHS CALCULATIONS (إجمالي الوفيات، ذكور، إناث)
+  // 2. DEATHS CALCULATIONS (إجمالي الوفيات، ذكور، إناث بتطبيع دقيق للنوع)
   const deathsData = useMemo(() => {
-    const deathRecords = monthDispenses.filter((r) => {
-      const hasDeathType =
-        r.dispenseType === 'death' ||
-        r.dispenseType === 'death_certificate' ||
-        r.dispenseType === 'death_notification';
-
-      const hasDeathItem = r.itemsDeducted?.some(
-        (i) =>
-          (i.stockCategory === 'death_certificates' || i.stockCategory === 'death_notifications') &&
-          i.quantity > 0
-      );
-
-      return hasDeathType || hasDeathItem;
-    });
+    const deathRecords = monthDispenses.filter((r) => isDeathRegistration(r));
 
     const males = deathRecords.filter((r) => {
-      if (r.gender === 'male') return true;
-      // Default fallback for legacy single death records if not female
-      if (r.gender !== 'female' && r.dispenseType === 'death') return true;
-      return false;
+      const g = normalizeGender(r.gender);
+      return g === 'male';
     });
 
-    const females = deathRecords.filter((r) => r.gender === 'female');
+    const females = deathRecords.filter((r) => {
+      const g = normalizeGender(r.gender);
+      return g === 'female';
+    });
+
     const unspecified = deathRecords.filter(
       (r) => !males.includes(r) && !females.includes(r)
     );
@@ -203,34 +183,37 @@ export const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
     };
   }, [monthDispenses]);
 
-  // 3. HEALTH CARDS DISPENSED (منصرف بطاقات صحية ذكور وإناث)
+  // 3. HEALTH CARDS DISPENSED (منصرف بطاقات صحية ذكور وإناث بدقة)
   const healthCardsData = useMemo(() => {
     let maleCards = 0;
     let femaleCards = 0;
 
     monthDispenses.forEach((r) => {
-      if (r.itemsDeducted && Array.isArray(r.itemsDeducted)) {
-        r.itemsDeducted.forEach((item) => {
-          if (item.stockCategory === 'health_cards_male') {
-            maleCards += item.quantity;
-          } else if (item.stockCategory === 'health_cards_female') {
-            femaleCards += item.quantity;
-          }
-        });
-      } else {
-        // Fallback for older records
-        if (r.dispenseType === 'birth_male' || r.dispenseType === 'health_card_male') {
-          maleCards += 1;
-        } else if (r.dispenseType === 'birth_female' || r.dispenseType === 'health_card_female') {
-          femaleCards += 1;
-        }
-      }
+      const cardCounts = getDispensedHealthCards(r);
+      maleCards += cardCounts.male;
+      femaleCards += cardCounts.female;
     });
 
     return {
       maleCards,
       femaleCards,
       totalCards: maleCards + femaleCards,
+    };
+  }, [monthDispenses]);
+
+  // 3.1 FINANCIAL DATA (المبالغ المحصلة والمورّدة للخزينة)
+  const financialData = useMemo(() => {
+    let totalAmount = 0;
+    let paidCount = 0;
+    monthDispenses.forEach((r) => {
+      if (r.paymentAmount !== undefined && r.paymentAmount !== null && !isNaN(Number(r.paymentAmount))) {
+        totalAmount += Number(r.paymentAmount);
+        paidCount += 1;
+      }
+    });
+    return {
+      totalAmount,
+      paidCount,
     };
   }, [monthDispenses]);
 
@@ -299,17 +282,7 @@ export const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
     } else if (activeSubTab === 'deaths') {
       list = deathsData.records;
     } else if (activeSubTab === 'cards') {
-      list = monthDispenses.filter((r) =>
-        r.itemsDeducted?.some(
-          (i) =>
-            (i.stockCategory === 'health_cards_male' || i.stockCategory === 'health_cards_female') &&
-            i.quantity > 0
-        ) ||
-        r.dispenseType === 'birth_male' ||
-        r.dispenseType === 'birth_female' ||
-        r.dispenseType === 'health_card_male' ||
-        r.dispenseType === 'health_card_female'
-      );
+      list = monthDispenses.filter((r) => getDispensedHealthCards(r).total > 0);
     }
 
     if (!searchTerm.trim()) return list;
@@ -570,8 +543,8 @@ export const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
         </div>
       </div>
 
-      {/* CORE HIGHLIGHTS GRID: MOTHERS, BIRTHS, DEATHS, HEALTH CARDS */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+      {/* CORE HIGHLIGHTS GRID: MOTHERS, BIRTHS, DEATHS, HEALTH CARDS, FINANCIALS */}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         {/* CARD 1: المواليد لهذا الشهر (إجمالي + ذكور + إناث) */}
         <div className="bg-white rounded-2xl border border-blue-200 p-5 shadow-xs relative overflow-hidden">
           <div className="absolute top-0 right-0 left-0 h-1.5 bg-blue-600" />
@@ -815,6 +788,57 @@ export const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
             </span>
           </div>
         </div>
+
+        {/* CARD 4: المبالغ المحصلة / المورّدة */}
+        <div className="bg-white rounded-2xl border border-emerald-200 p-5 shadow-xs relative overflow-hidden">
+          <div className="absolute top-0 right-0 left-0 h-1.5 bg-emerald-600" />
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <div className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-700 flex items-center justify-center font-bold">
+                <DollarSign className="w-5 h-5" />
+              </div>
+              <h3 className="font-black text-slate-900 text-base">المبالغ المحصلة والمورّدة</h3>
+            </div>
+            <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold font-mono">
+              {monthNameAr} {selectedYear}
+            </span>
+          </div>
+
+          {/* Grand Total Collected */}
+          <div className="bg-emerald-50/60 rounded-xl p-3.5 border border-emerald-100 mb-4 flex items-center justify-between">
+            <div>
+              <span className="block text-xs font-bold text-emerald-900">إجمالي المبالغ المورّدة للخزينة:</span>
+              <span className="text-xs text-emerald-700">رسوم بطاقات صحية ومستندات</span>
+            </div>
+            <div className="flex items-baseline gap-1">
+              <span className="text-3xl font-black text-emerald-900 font-mono">
+                {financialData.totalAmount}
+              </span>
+              <span className="text-xs font-bold text-emerald-800">ج.م</span>
+            </div>
+          </div>
+
+          {/* Breakdown */}
+          <div className="grid grid-cols-2 gap-3 mb-3">
+            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+              <span className="block text-[11px] font-bold text-slate-600 mb-0.5">عدد العمليات المحصلة:</span>
+              <span className="text-xl font-black text-slate-900 font-mono">
+                {financialData.paidCount}
+              </span>
+            </div>
+            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+              <span className="block text-[11px] font-bold text-slate-600 mb-0.5">متوسط العملية:</span>
+              <span className="text-xl font-black text-slate-900 font-mono">
+                {financialData.paidCount > 0 ? Math.round(financialData.totalAmount / financialData.paidCount) : 0} ج.م
+              </span>
+            </div>
+          </div>
+
+          <div className="p-2.5 rounded-xl bg-emerald-50/60 border border-emerald-200 text-xs flex items-center justify-between text-emerald-900 font-bold">
+            <span>توريدات قسائم 33 ع.ح:</span>
+            <span>{financialData.paidCount > 0 ? 'مسجلة وموثقة' : 'لا توجد توريدات'}</span>
+          </div>
+        </div>
       </div>
 
       {/* SECTION 2: REMAINING STOCK FOR EACH CATEGORY TABLE (الرصيد المتبقي لكل فئة) */}
@@ -998,8 +1022,10 @@ export const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
                 <th className="py-3 px-3">التاريخ والوقت</th>
                 <th className="py-3 px-4">اسم المستلم / المنصرف له</th>
                 <th className="py-3 px-3">النوع</th>
+                <th className="py-3 px-3">نوع المعاملة</th>
                 <th className="py-3 px-3">المستندات المصروفة</th>
-                <th className="py-3 px-3">رقم الشهادة</th>
+                <th className="py-3 px-3">رقم الشهادة / الإيصال</th>
+                <th className="py-3 px-3 font-mono">المبلغ المورّد</th>
                 <th className="py-3 px-3">الموظف الصارف</th>
                 <th className="py-3 px-4">ملاحظات</th>
                 <th className="py-3 px-3 text-center no-print">إجراء</th>
@@ -1008,69 +1034,89 @@ export const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
             <tbody className="divide-y divide-slate-200">
               {displayedRecords.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-10 text-center text-slate-400">
+                  <td colSpan={11} className="py-10 text-center text-slate-400">
                     <Info className="w-7 h-7 mx-auto text-slate-300 mb-1" />
                     <p className="font-bold text-slate-600">لا توجد معاملات مسجلة في هذا التصنيف لشهر {monthNameAr} {selectedYear}</p>
                   </td>
                 </tr>
               ) : (
-                displayedRecords.map((r, idx) => (
-                  <tr key={r.id} className="hover:bg-slate-50 transition">
-                    <td className="py-3 px-3 font-mono text-slate-400 font-bold">{idx + 1}</td>
-                    <td className="py-3 px-3">
-                      <span className="font-bold text-slate-800">{r.date}</span>
-                      {r.time && <span className="text-[11px] text-slate-400 block">{r.time}</span>}
-                    </td>
-                    <td className="py-3 px-4 font-bold text-slate-900">
-                      {r.beneficiaryName}
-                    </td>
-                    <td className="py-3 px-3">
-                      {r.gender === 'male' ? (
-                        <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-blue-100 text-blue-900 border border-blue-200">
-                          ذكر
-                        </span>
-                      ) : r.gender === 'female' ? (
-                        <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-pink-100 text-pink-900 border border-pink-200">
-                          أنثى
-                        </span>
-                      ) : (
-                        <span className="text-slate-400 text-[11px]">-</span>
-                      )}
-                    </td>
-                    <td className="py-3 px-3">
-                      <div className="flex flex-wrap gap-1 max-w-xs">
-                        {(r.itemsDeducted || []).map((it, iIdx) => (
-                          <span
-                            key={iIdx}
-                            className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200"
-                          >
-                            {it.stockCategory}: {it.quantity}
+                displayedRecords.map((r, idx) => {
+                  const typeInfo = getDispenseTypeDisplay(r);
+                  return (
+                    <tr key={r.id} className="hover:bg-slate-50 transition">
+                      <td className="py-3 px-3 font-mono text-slate-400 font-bold">{idx + 1}</td>
+                      <td className="py-3 px-3 whitespace-nowrap">
+                        <span className="font-bold text-slate-800">{r.date}</span>
+                        {r.time && <span className="text-[11px] text-slate-400 block">{r.time}</span>}
+                      </td>
+                      <td className="py-3 px-4 font-bold text-slate-900 whitespace-nowrap">
+                        {r.beneficiaryName}
+                      </td>
+                      <td className="py-3 px-3 whitespace-nowrap">
+                        {normalizeGender(r.gender) === 'male' ? (
+                          <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-blue-100 text-blue-900 border border-blue-200">
+                            ذكر
                           </span>
-                        ))}
-                      </div>
-                    </td>
-                    <td className="py-3 px-3 font-mono text-xs font-bold text-slate-700">
-                      {r.certificateNumber || '-'}
-                    </td>
-                    <td className="py-3 px-3 text-xs text-slate-600">
-                      {r.dispensedBy}
-                    </td>
-                    <td className="py-3 px-4 text-xs text-slate-500 max-w-xs truncate" title={r.notes}>
-                      {r.notes || '-'}
-                    </td>
-                    <td className="py-3 px-3 text-center no-print">
-                      <button
-                        type="button"
-                        onClick={() => onSelectPrintRecord(r)}
-                        className="inline-flex items-center gap-1 px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition cursor-pointer"
-                        title="طباعة إيصال الصرف"
-                      >
-                        <Printer className="w-3 h-3" />
-                        <span>إيصال</span>
-                      </button>
-                    </td>
-                  </tr>
-                ))
+                        ) : normalizeGender(r.gender) === 'female' ? (
+                          <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-pink-100 text-pink-900 border border-pink-200">
+                            أنثى
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 text-[11px]">-</span>
+                        )}
+                      </td>
+                      <td className="py-3 px-3 whitespace-nowrap">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold border ${typeInfo.badgeClass}`}>
+                          {r.dispenseEventType || typeInfo.label}
+                        </span>
+                      </td>
+                      <td className="py-3 px-3">
+                        <div className="flex flex-wrap gap-1 max-w-xs">
+                          {(r.itemsDeducted || []).map((it, iIdx) => (
+                            <span
+                              key={iIdx}
+                              className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-800 border border-slate-200 whitespace-nowrap"
+                            >
+                              {db.stocks[it.stockCategory]?.name || it.stockCategory}: {it.quantity}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="py-3 px-3 font-mono text-xs font-bold text-slate-700 whitespace-nowrap">
+                        <div>{r.certificateNumber || '-'}</div>
+                        {r.healthCardReceiptNumber && (
+                          <div className="text-[10px] text-blue-700 font-mono">إيصال: {r.healthCardReceiptNumber}</div>
+                        )}
+                      </td>
+                      <td className="py-3 px-3 font-mono font-bold text-emerald-800 whitespace-nowrap">
+                        {r.paymentAmount !== undefined && r.paymentAmount !== null ? (
+                          <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-mono font-bold">
+                            {r.paymentAmount} ج.م
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 text-xs">-</span>
+                        )}
+                      </td>
+                      <td className="py-3 px-3 text-xs text-slate-600 whitespace-nowrap">
+                        {r.dispensedBy}
+                      </td>
+                      <td className="py-3 px-4 text-xs text-slate-500 max-w-xs truncate" title={r.notes}>
+                        {r.notes || '-'}
+                      </td>
+                      <td className="py-3 px-3 text-center no-print whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => onSelectPrintRecord(r)}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition cursor-pointer"
+                          title="طباعة إيصال الصرف"
+                        >
+                          <Printer className="w-3 h-3" />
+                          <span>إيصال</span>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>

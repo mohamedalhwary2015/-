@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { DispenseRecord, StockCategory, StockItem } from '../types';
-import { X, CheckCircle2, AlertTriangle, Plus, Trash2, Edit3 } from 'lucide-react';
+import { X, CheckCircle2, Plus, Trash2, Edit3, DollarSign, User } from 'lucide-react';
 
 interface EditDispenseModalProps {
   record: DispenseRecord | null;
@@ -20,10 +20,16 @@ export const EditDispenseModal: React.FC<EditDispenseModalProps> = ({
   const [beneficiaryName, setBeneficiaryName] = useState(record.beneficiaryName || '');
   const [date, setDate] = useState(record.date || '');
   const [time, setTime] = useState(record.time || '');
+  const [gender, setGender] = useState<'male' | 'female'>(record.gender === 'female' ? 'female' : 'male');
   const [dispenseType, setDispenseType] = useState(record.dispenseType || 'birth_male');
   const [dispenseEventType, setDispenseEventType] = useState(record.dispenseEventType || '');
   const [certificateNumber, setCertificateNumber] = useState(record.certificateNumber || '');
   const [healthCardReceiptNumber, setHealthCardReceiptNumber] = useState(record.healthCardReceiptNumber || '');
+  const [paymentAmount, setPaymentAmount] = useState<string>(
+    record.paymentAmount !== undefined && record.paymentAmount !== null ? String(record.paymentAmount) : ''
+  );
+  const [fatherName, setFatherName] = useState(record.fatherName || '');
+  const [motherName, setMotherName] = useState(record.motherName || '');
   const [reporterName, setReporterName] = useState(record.reporterName || '');
   const [reporterRelation, setReporterRelation] = useState(record.reporterRelation || '');
   const [dispensedBy, setDispensedBy] = useState(record.dispensedBy || '');
@@ -38,6 +44,31 @@ export const EditDispenseModal: React.FC<EditDispenseModalProps> = ({
 
   const [newItemCategory, setNewItemCategory] = useState<StockCategory>('birth_certificates');
   const [newItemQuantity, setNewItemQuantity] = useState<number>(1);
+
+  // Sync state whenever record prop updates
+  useEffect(() => {
+    if (!record) return;
+    setBeneficiaryName(record.beneficiaryName || '');
+    setDate(record.date || '');
+    setTime(record.time || '');
+    setGender(record.gender === 'female' ? 'female' : 'male');
+    setDispenseType(record.dispenseType || 'birth_male');
+    setDispenseEventType(record.dispenseEventType || '');
+    setCertificateNumber(record.certificateNumber || '');
+    setHealthCardReceiptNumber(record.healthCardReceiptNumber || '');
+    setPaymentAmount(
+      record.paymentAmount !== undefined && record.paymentAmount !== null ? String(record.paymentAmount) : ''
+    );
+    setFatherName(record.fatherName || '');
+    setMotherName(record.motherName || '');
+    setReporterName(record.reporterName || '');
+    setReporterRelation(record.reporterRelation || '');
+    setDispensedBy(record.dispensedBy || '');
+    setNotes(record.notes || '');
+    setItemsDeducted(
+      record.itemsDeducted && record.itemsDeducted.length > 0 ? [...record.itemsDeducted] : []
+    );
+  }, [record]);
 
   const handleAddItem = () => {
     const existingIndex = itemsDeducted.findIndex((i) => i.stockCategory === newItemCategory);
@@ -71,18 +102,27 @@ export const EditDispenseModal: React.FC<EditDispenseModalProps> = ({
       return;
     }
 
+    const numericPayment =
+      paymentAmount.trim() !== '' && !isNaN(Number(paymentAmount))
+        ? Number(paymentAmount)
+        : undefined;
+
     onSave(record.id, {
       beneficiaryName: beneficiaryName.trim(),
       date,
       time,
+      gender,
       dispenseType,
       dispenseEventType: dispenseEventType.trim() || undefined,
-      certificateNumber: certificateNumber.trim(),
-      healthCardReceiptNumber: healthCardReceiptNumber.trim(),
-      reporterName: reporterName.trim(),
-      reporterRelation: reporterRelation.trim(),
+      certificateNumber: certificateNumber.trim() || undefined,
+      healthCardReceiptNumber: healthCardReceiptNumber.trim() || undefined,
+      paymentAmount: numericPayment,
+      fatherName: fatherName.trim() || undefined,
+      motherName: motherName.trim() || undefined,
+      reporterName: reporterName.trim() || undefined,
+      reporterRelation: reporterRelation.trim() || undefined,
       dispensedBy: dispensedBy.trim(),
-      notes: notes.trim(),
+      notes: notes.trim() || undefined,
       itemsDeducted,
     });
     onClose();
@@ -199,7 +239,60 @@ export const EditDispenseModal: React.FC<EditDispenseModalProps> = ({
             </div>
           </div>
 
-          {/* Row 3: Certificate Number & Health Card Receipt */}
+          {/* Row 3: Gender & Payment Amount */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block font-bold text-slate-700 mb-1">
+                النوع / الجنس للحالة *
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setGender('male')}
+                  className={`py-2 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer border ${
+                    gender === 'male'
+                      ? 'bg-blue-600 text-white border-blue-700 shadow-xs'
+                      : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  <span className="w-2 h-2 rounded-full bg-blue-300" />
+                  <span>ذكر</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setGender('female')}
+                  className={`py-2 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer border ${
+                    gender === 'female'
+                      ? 'bg-pink-600 text-white border-pink-700 shadow-xs'
+                      : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  <span className="w-2 h-2 rounded-full bg-pink-300" />
+                  <span>أنثى</span>
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="block font-bold text-slate-700 mb-1">
+                المبلغ المحصل / المورّد (ج.م)
+              </label>
+              <div className="relative">
+                <DollarSign className="w-4 h-4 text-emerald-600 absolute right-3 top-3" />
+                <input
+                  type="number"
+                  step="any"
+                  min="0"
+                  value={paymentAmount}
+                  onChange={(e) => setPaymentAmount(e.target.value)}
+                  className="w-full pr-9 pl-3 py-2 rounded-xl border border-slate-300 font-mono font-bold text-emerald-800 focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
+                  placeholder="مثال: 50"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Row 4: Certificate Number & Health Card Receipt */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
               <label className="block font-bold text-slate-700 mb-1">
@@ -216,14 +309,43 @@ export const EditDispenseModal: React.FC<EditDispenseModalProps> = ({
 
             <div>
               <label className="block font-bold text-slate-700 mb-1">
-                رقم إيصال البطاقة الصحية (إن وجد)
+                رقم إيصال التوريد / البطاقة الصحية
               </label>
               <input
                 type="text"
                 value={healthCardReceiptNumber}
                 onChange={(e) => setHealthCardReceiptNumber(e.target.value)}
                 className="w-full px-3 py-2 rounded-xl border border-slate-300 font-mono text-slate-900 focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
-                placeholder="084912"
+                placeholder="084912 أو قسيمة 33 ع.ح"
+              />
+            </div>
+          </div>
+
+          {/* Row 5: Father Name & Mother Name */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block font-bold text-slate-700 mb-1">
+                اسم الأب (إن وجد)
+              </label>
+              <input
+                type="text"
+                value={fatherName}
+                onChange={(e) => setFatherName(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-slate-900 focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
+                placeholder="اسم والد الحالة..."
+              />
+            </div>
+
+            <div>
+              <label className="block font-bold text-slate-700 mb-1">
+                اسم الأم (إن وجد)
+              </label>
+              <input
+                type="text"
+                value={motherName}
+                onChange={(e) => setMotherName(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-slate-300 text-slate-900 focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600"
+                placeholder="اسم والدة الحالة..."
               />
             </div>
           </div>

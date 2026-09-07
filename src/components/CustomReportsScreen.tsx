@@ -4,6 +4,14 @@ import { exportToCSV } from '../storage/db';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import {
+  normalizeGender,
+  isActualBirthRegistration,
+  isDeathRegistration,
+  getDispensedHealthCards,
+  getDispenseTypeDisplay,
+  getItemCategory,
+} from '../services/reportService';
+import {
   FileSpreadsheet,
   Download,
   Printer,
@@ -124,59 +132,44 @@ export const CustomReportsScreen: React.FC<CustomReportsScreenProps> = ({
 
   // Key Summary Metrics in the selected Date Range
   const metrics = useMemo(() => {
-    const totalBirths = dateFilteredDispenses.filter(
-      (r) =>
-        r.dispenseType === 'birth_male' ||
-        r.dispenseType === 'birth_female' ||
-        r.itemsDeducted?.some((i) => i.category === 'birth_certificates' && i.quantity > 0)
-    );
-    const totalMaleBirths = dateFilteredDispenses.filter(
-      (r) =>
-        r.dispenseType === 'birth_male' ||
-        r.itemsDeducted?.some((i) => i.category === 'health_cards_male' && i.quantity > 0)
-    );
-    const totalFemaleBirths = dateFilteredDispenses.filter(
-      (r) =>
-        r.dispenseType === 'birth_female' ||
-        r.itemsDeducted?.some((i) => i.category === 'health_cards_female' && i.quantity > 0)
-    );
-    const totalDeaths = dateFilteredDispenses.filter(
-      (r) =>
-        r.dispenseType === 'death' ||
-        r.itemsDeducted?.some(
-          (i) =>
-            (i.category === 'death_certificates' || i.category === 'death_notifications') &&
-            i.quantity > 0
-        )
-    );
+    // 1. Birth registrations: actual birth registrations only
+    const actualBirthRecords = dateFilteredDispenses.filter((r) => isActualBirthRegistration(r));
+    const totalMaleBirths = actualBirthRecords.filter((r) => {
+      const g = normalizeGender(r.gender);
+      return g === 'male' || (g === 'unknown' && r.dispenseType === 'birth_male');
+    });
+    const totalFemaleBirths = actualBirthRecords.filter((r) => {
+      const g = normalizeGender(r.gender);
+      return g === 'female' || (g === 'unknown' && r.dispenseType === 'birth_female');
+    });
 
-    // Health cards issued:
-    const maleCards = dateFilteredDispenses.reduce((acc, r) => {
-      const match = r.itemsDeducted?.find((i) => i.category === 'health_cards_male');
-      if (match) return acc + match.quantity;
-      return acc + (r.dispenseType === 'birth_male' ? 1 : 0);
-    }, 0);
+    // 2. Death registrations
+    const deathRecords = dateFilteredDispenses.filter((r) => isDeathRegistration(r));
+    const maleDeaths = deathRecords.filter((r) => normalizeGender(r.gender) === 'male');
+    const femaleDeaths = deathRecords.filter((r) => normalizeGender(r.gender) === 'female');
 
-    const femaleCards = dateFilteredDispenses.reduce((acc, r) => {
-      const match = r.itemsDeducted?.find((i) => i.category === 'health_cards_female');
-      if (match) return acc + match.quantity;
-      return acc + (r.dispenseType === 'birth_female' ? 1 : 0);
-    }, 0);
-
+    // 3. Health cards issued
+    let maleCards = 0;
+    let femaleCards = 0;
+    dateFilteredDispenses.forEach((r) => {
+      const cards = getDispensedHealthCards(r);
+      maleCards += cards.male;
+      femaleCards += cards.female;
+    });
     const totalHealthCards = maleCards + femaleCards;
 
-    // Payments: sum of paymentAmount or receipt amounts
+    // 4. Payments: sum of paymentAmount
     const totalPaymentsReceived = dateFilteredDispenses.reduce(
       (sum, r) => sum + (Number(r.paymentAmount) || 0),
       0
     );
 
-    // Number of health card receipts issued
+    // 5. Number of health card receipts issued
     const validReceiptsCount = dateFilteredDispenses.filter(
-      (r) => r.healthCardReceiptNumber && !r.healthCardReceiptNumber.includes('غير مطلوب')
+      (r) => r.healthCardReceiptNumber && r.healthCardReceiptNumber.trim() !== '' && !r.healthCardReceiptNumber.includes('غير مطلوب')
     ).length;
 
-    // Omitted registrations summary
+    // 6. Omitted registrations summary
     const lateBirths = dateFilteredLateRegs.filter((l) => l.type === 'birth').length;
     const lateDeaths = dateFilteredLateRegs.filter((l) => l.type === 'death').length;
     const lateUnderYear = dateFilteredLateRegs.filter((l) => (l.ageCategory || 'under_one_year') === 'under_one_year').length;
@@ -184,17 +177,19 @@ export const CustomReportsScreen: React.FC<CustomReportsScreenProps> = ({
     const lateApproved = dateFilteredLateRegs.filter((l) => l.status === 'approved').length;
     const latePending = dateFilteredLateRegs.filter((l) => l.status !== 'approved' && l.status !== 'rejected').length;
 
-    // Total documents dispensed (sum of all itemsDeducted in this range)
+    // 7. Total documents dispensed (sum of all itemsDeducted in this range)
     const totalDocsDispensed = dateFilteredDispenses.reduce((sum, r) => {
-      return sum + (r.itemsDeducted?.reduce((inner, item) => inner + item.quantity, 0) || 0);
+      return sum + (r.itemsDeducted?.reduce((inner, item) => inner + (Number(item.quantity) || 0), 0) || 0);
     }, 0);
 
     return {
       totalDispenses: dateFilteredDispenses.length,
-      totalBirthsCount: totalBirths.length,
+      totalBirthsCount: actualBirthRecords.length,
       maleBirthsCount: totalMaleBirths.length,
       femaleBirthsCount: totalFemaleBirths.length,
-      totalDeathsCount: totalDeaths.length,
+      totalDeathsCount: deathRecords.length,
+      maleDeathsCount: maleDeaths.length,
+      femaleDeathsCount: femaleDeaths.length,
       maleCardsCount: maleCards,
       femaleCardsCount: femaleCards,
       totalHealthCardsCount: totalHealthCards,
@@ -219,34 +214,11 @@ export const CustomReportsScreen: React.FC<CustomReportsScreenProps> = ({
     return dateFilteredDispenses.filter((r) => {
       // Record type check
       if (recordType === 'birth_certificates') {
-        const hasBirthDoc =
-          r.dispenseType === 'birth_male' ||
-          r.dispenseType === 'birth_female' ||
-          r.itemsDeducted?.some(
-            (i) =>
-              (i.category === 'birth_certificates' || i.category === 'birth_notifications') &&
-              i.quantity > 0
-          );
-        if (!hasBirthDoc) return false;
+        if (!isActualBirthRegistration(r)) return false;
       } else if (recordType === 'death_certificates') {
-        const hasDeathDoc =
-          r.dispenseType === 'death' ||
-          r.itemsDeducted?.some(
-            (i) =>
-              (i.category === 'death_certificates' || i.category === 'death_notifications') &&
-              i.quantity > 0
-          );
-        if (!hasDeathDoc) return false;
+        if (!isDeathRegistration(r)) return false;
       } else if (recordType === 'health_cards') {
-        const hasCardDoc =
-          r.dispenseType === 'birth_male' ||
-          r.dispenseType === 'birth_female' ||
-          r.itemsDeducted?.some(
-            (i) =>
-              (i.category === 'health_cards_male' || i.category === 'health_cards_female') &&
-              i.quantity > 0
-          );
-        if (!hasCardDoc) return false;
+        if (getDispensedHealthCards(r).total <= 0) return false;
       }
 
       // Search term
@@ -334,11 +306,7 @@ export const CustomReportsScreen: React.FC<CustomReportsScreenProps> = ({
       (idx + 1).toString(),
       r.date,
       r.time,
-      r.dispenseType === 'birth_male'
-        ? 'ميلاد (ذكر)'
-        : r.dispenseType === 'birth_female'
-        ? 'ميلاد (أنثى)'
-        : 'وفاة',
+      getDispenseTypeDisplay(r).label,
       r.beneficiaryName,
       r.certificateNumber,
       r.healthCardReceiptNumber,
@@ -748,8 +716,9 @@ export const CustomReportsScreen: React.FC<CustomReportsScreenProps> = ({
             </div>
             <p className="text-[11px] text-slate-500 font-medium">حالة وفاة موثقة</p>
           </div>
-          <div className="pt-2 border-t border-slate-100 text-[10px] text-slate-600 font-mono">
-            <span>بلاغات منفذة: {metrics.totalDeathsCount}</span>
+          <div className="pt-2 border-t border-slate-100 text-[10px] text-slate-600 flex justify-between font-mono">
+            <span>ذكور: {metrics.maleDeathsCount}</span>
+            <span>إناث: {metrics.femaleDeathsCount}</span>
           </div>
         </div>
 
@@ -872,24 +841,18 @@ export const CustomReportsScreen: React.FC<CustomReportsScreenProps> = ({
                           {r.date} <span className="text-slate-400 text-[10px]">{r.time}</span>
                         </td>
                         <td className="py-2.5 px-3 whitespace-nowrap">
-                          {r.dispenseType === 'birth_male' && (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-50 text-blue-800 text-[11px] font-bold">
-                              <Baby className="w-3 h-3 text-blue-600" />
-                              مولود ذكر
-                            </span>
-                          )}
-                          {r.dispenseType === 'birth_female' && (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-pink-50 text-pink-800 text-[11px] font-bold">
-                              <Baby className="w-3 h-3 text-pink-600" />
-                              مولود أنثى
-                            </span>
-                          )}
-                          {r.dispenseType === 'death' && (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 text-slate-800 text-[11px] font-bold">
-                              <Skull className="w-3 h-3 text-slate-600" />
-                              وفاة
-                            </span>
-                          )}
+                          {(() => {
+                            const info = getDispenseTypeDisplay(r);
+                            return (
+                              <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md text-[11px] font-bold ${info.badgeClass}`}>
+                                {info.iconType === 'birth' && <Baby className="w-3.5 h-3.5" />}
+                                {info.iconType === 'death' && <Skull className="w-3.5 h-3.5" />}
+                                {info.iconType === 'health_card' && <CreditCard className="w-3.5 h-3.5" />}
+                                {info.iconType === 'document' && <FileCheck2 className="w-3.5 h-3.5" />}
+                                <span>{info.label}</span>
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td className="py-2.5 px-3 font-bold text-slate-900 whitespace-nowrap">
                           {r.beneficiaryName}
@@ -1113,8 +1076,8 @@ export const CustomReportsScreen: React.FC<CustomReportsScreenProps> = ({
                       <tr key={r.id}>
                         <td className="border border-slate-800 py-1 px-2 text-center font-mono">{i + 1}</td>
                         <td className="border border-slate-800 py-1 px-2 font-mono">{r.date}</td>
-                        <td className="border border-slate-800 py-1 px-2">
-                          {r.dispenseType === 'birth_male' ? 'مولود ذكر' : r.dispenseType === 'birth_female' ? 'مولود أنثى' : 'متوفى'}
+                        <td className="border border-slate-800 py-1 px-2 font-bold">
+                          {getDispenseTypeDisplay(r).label}
                         </td>
                         <td className="border border-slate-800 py-1 px-2 font-bold">{r.beneficiaryName}</td>
                         <td className="border border-slate-800 py-1 px-2 font-mono font-bold">{r.certificateNumber}</td>
