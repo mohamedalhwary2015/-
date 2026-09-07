@@ -228,6 +228,10 @@ export default function App() {
       <ProductionDataRepairModal
         isOpen={isRepairModalOpen}
         onClose={() => setIsRepairModalOpen(false)}
+        currentLocalDb={db}
+        onDatabaseRepaired={(newDb) => {
+          handleDatabaseUpdate(newDb);
+        }}
         onRepairApplied={(newDb) => {
           handleDatabaseUpdate(newDb);
         }}

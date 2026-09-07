@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { AppDatabase, StockCategory } from '../types';
+import { getDatabase } from '../storage/db';
 import { 
   compareOfflineAndOnlineDatabases, 
   executeProductionRepair, 
@@ -31,8 +32,9 @@ import {
 interface ProductionDataRepairModalProps {
   isOpen: boolean;
   onClose: () => void;
-  currentLocalDb: AppDatabase;
-  onDatabaseRepaired: (newDb: AppDatabase) => void;
+  currentLocalDb?: AppDatabase;
+  onDatabaseRepaired?: (newDb: AppDatabase) => void;
+  onRepairApplied?: (newDb: AppDatabase) => void;
 }
 
 export const ProductionDataRepairModal: React.FC<ProductionDataRepairModalProps> = ({
@@ -40,20 +42,21 @@ export const ProductionDataRepairModal: React.FC<ProductionDataRepairModalProps>
   onClose,
   currentLocalDb,
   onDatabaseRepaired,
+  onRepairApplied,
 }) => {
   // Active sub-tab
   const [activeTab, setActiveTab] = useState<'overview' | 'supplies' | 'dispenses' | 'balances' | 'report' | 'execute'>('overview');
 
   // Offline source selection
   const [offlineSourceType, setOfflineSourceType] = useState<'current_local' | 'idb_snapshot' | 'uploaded_file'>('current_local');
-  const [offlineDb, setOfflineDb] = useState<AppDatabase>(currentLocalDb);
+  const [offlineDb, setOfflineDb] = useState<AppDatabase>(() => currentLocalDb || getDatabase());
   const [onlineDb, setOnlineDb] = useState<AppDatabase | null>(null);
   const [isLoadingOnline, setIsLoadingOnline] = useState<boolean>(false);
   const [onlineError, setOnlineError] = useState<string | null>(null);
 
   // Available IDB snapshots
-  const [idbSnapshots, setIdbSnapshots] = useState<Array<{ id: number; timestamp: string; trigger: string; recordsCount: number; data: AppDatabase }>>([]);
-  const [selectedSnapshotId, setSelectedSnapshotId] = useState<number | null>(null);
+  const [idbSnapshots, setIdbSnapshots] = useState<Array<{ id: string | number; timestamp: string; trigger: string; totalRecords?: number; recordsCount?: number; data: AppDatabase }>>([]);
+  const [selectedSnapshotId, setSelectedSnapshotId] = useState<string | number | null>(null);
 
   // Excluded ID selection for repair (defaulting to confirmed bogus/demo items)
   const [excludedIds, setExcludedIds] = useState<Set<string>>(new Set());
@@ -69,7 +72,8 @@ export const ProductionDataRepairModal: React.FC<ProductionDataRepairModalProps>
   useEffect(() => {
     if (!isOpen) return;
 
-    setOfflineDb(currentLocalDb);
+    const effectiveLocal = currentLocalDb || getDatabase();
+    setOfflineDb(effectiveLocal);
 
     // Fetch IDB snapshots
     getStoredSnapshotsFromIDB().then((snaps) => {
@@ -88,13 +92,13 @@ export const ProductionDataRepairModal: React.FC<ProductionDataRepairModalProps>
         if (data.success && data.database) {
           setOnlineDb(data.database);
         } else {
-          setOnlineDb(currentLocalDb);
+          setOnlineDb(effectiveLocal);
         }
       })
       .catch((err) => {
         console.warn('Could not fetch online database:', err);
         setOnlineError('تعذر الاتصال المباشر بقاعدة البيانات المركزية، سيتم اعتماد النسخة المحلية كمرجع.');
-        setOnlineDb(currentLocalDb);
+        setOnlineDb(effectiveLocal);
       })
       .finally(() => {
         setIsLoadingOnline(false);
@@ -142,7 +146,7 @@ export const ProductionDataRepairModal: React.FC<ProductionDataRepairModalProps>
   };
 
   // Select Snapshot from IDB
-  const handleSelectSnapshot = (snapId: number) => {
+  const handleSelectSnapshot = (snapId: string | number) => {
     const snap = idbSnapshots.find((s) => s.id === snapId);
     if (snap && snap.data) {
       setSelectedSnapshotId(snapId);
@@ -206,7 +210,8 @@ export const ProductionDataRepairModal: React.FC<ProductionDataRepairModalProps>
       const res = await executeProductionRepair(offlineDb, onlineDb, auditReport, excludedIds);
       setExecutionResult(res);
       if (res.success) {
-        onDatabaseRepaired(res.cleanedDatabase);
+        if (onDatabaseRepaired) onDatabaseRepaired(res.cleanedDatabase);
+        if (onRepairApplied) onRepairApplied(res.cleanedDatabase);
       }
     } catch (err: any) {
       setExecutionResult({
