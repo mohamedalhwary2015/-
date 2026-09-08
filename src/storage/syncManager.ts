@@ -676,11 +676,50 @@ export async function pullIncrementalChanges(currentDb: AppDatabase): Promise<{
       Object.assign(currentDb, merged);
       modified = true;
     } else if (data.hasChanges && data.changes) {
-      // Non-destructive incremental merge respecting Reset Boundary
-      const { dispenseRecords = [], supplyTransactions = [], lateRegistrations = [] } = data.changes;
+      // Non-destructive incremental merge respecting Reset Boundary and Tombstones
+      const {
+        dispenseRecords = [],
+        supplyTransactions = [],
+        lateRegistrations = [],
+        syncTombstones = [],
+      } = data.changes;
+
+      // 0. Merge Sync Tombstones
+      if (!currentDb.syncTombstones) currentDb.syncTombstones = [];
+      const localTombstoneMap = new Map<string, any>();
+      currentDb.syncTombstones.forEach((t) => {
+        if (t && (t.recordId || t.transactionId)) {
+          localTombstoneMap.set(t.recordId || t.transactionId, t);
+        }
+      });
+      syncTombstones.forEach((t: any) => {
+        if (t && (t.recordId || t.transactionId)) {
+          const key = t.recordId || t.transactionId;
+          if (!localTombstoneMap.has(key)) {
+            localTombstoneMap.set(key, t);
+            modified = true;
+          }
+        }
+      });
+      currentDb.syncTombstones = Array.from(localTombstoneMap.values());
+      const tombstoneIds = new Set<string>();
+      currentDb.syncTombstones.forEach((t) => {
+        if (t.recordId) tombstoneIds.add(t.recordId);
+        if (t.transactionId) tombstoneIds.add(t.transactionId);
+      });
+
+      const isTombstoned = (r: any) => {
+        return Boolean((r.id && tombstoneIds.has(r.id)) || (r.transactionId && tombstoneIds.has(r.transactionId)));
+      };
+
+      // Purge any local dispense record that has a tombstone
+      if (currentDb.dispenseRecords && currentDb.dispenseRecords.some(isTombstoned)) {
+        currentDb.dispenseRecords = currentDb.dispenseRecords.filter((r) => !isTombstoned(r));
+        modified = true;
+      }
 
       // 1. Merge Dispenses
-      const validDispenses = dispenseRecords.filter(isAfterReset);
+      const validDispenses = dispenseRecords.filter((r: any) => isAfterReset(r) && !isTombstoned(r));
       if (validDispenses.length > 0) {
         const dMap = new Map();
         (currentDb.dispenseRecords || []).forEach((r) => dMap.set(r.id, r));
@@ -688,7 +727,12 @@ export async function pullIncrementalChanges(currentDb: AppDatabase): Promise<{
           if (!dMap.has(r.id)) {
             dMap.set(r.id, r);
           } else {
-            dMap.set(r.id, { ...dMap.get(r.id), ...r });
+            const existing = dMap.get(r.id);
+            const incomingTime = new Date(r.updatedAt || r.createdAt || 0).getTime();
+            const existingTime = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
+            if (incomingTime >= existingTime) {
+              dMap.set(r.id, { ...existing, ...r });
+            }
           }
         });
         currentDb.dispenseRecords = Array.from(dMap.values());
@@ -1014,17 +1058,50 @@ export function mergeClientWithServer(clientDb: AppDatabase, serverDb: AppDataba
     return t > boundaryTime;
   };
 
-  // 1. Dispense Records: Union by ID with Reset Boundary filtering
+  // 0. Merge Sync Tombstones
+  const tombstoneMap = new Map<string, any>();
+  (serverDb.syncTombstones || []).forEach((t) => {
+    if (t && (t.recordId || t.transactionId)) {
+      tombstoneMap.set(t.recordId || t.transactionId, t);
+    }
+  });
+  (clientDb.syncTombstones || []).forEach((t) => {
+    if (t && (t.recordId || t.transactionId)) {
+      const key = t.recordId || t.transactionId;
+      if (!tombstoneMap.has(key)) {
+        tombstoneMap.set(key, t);
+      } else {
+        const existing = tombstoneMap.get(key);
+        const incomingTime = new Date(t.deletedAt || 0).getTime();
+        const existingTime = new Date(existing.deletedAt || 0).getTime();
+        if (incomingTime >= existingTime) {
+          tombstoneMap.set(key, { ...existing, ...t });
+        }
+      }
+    }
+  });
+  const mergedTombstones = Array.from(tombstoneMap.values());
+  const tombstoneIds = new Set<string>();
+  mergedTombstones.forEach((t) => {
+    if (t.recordId) tombstoneIds.add(t.recordId);
+    if (t.transactionId) tombstoneIds.add(t.transactionId);
+  });
+
+  const isTombstoned = (r: any) => {
+    return Boolean((r.id && tombstoneIds.has(r.id)) || (r.transactionId && tombstoneIds.has(r.transactionId)));
+  };
+
+  // 1. Dispense Records: Union by ID with Reset Boundary & Tombstone filtering
   const dispenseMap = new Map<string, any>();
-  (serverDb.dispenseRecords || []).forEach((r) => r?.id && isAfterReset(r) && dispenseMap.set(r.id, r));
+  (serverDb.dispenseRecords || []).forEach((r) => r?.id && isAfterReset(r) && !isTombstoned(r) && dispenseMap.set(r.id, r));
   (clientDb.dispenseRecords || []).forEach((r) => {
-    if (r?.id && isAfterReset(r)) {
+    if (r?.id && isAfterReset(r) && !isTombstoned(r)) {
       if (!dispenseMap.has(r.id)) {
         dispenseMap.set(r.id, r);
       } else {
         const existing = dispenseMap.get(r.id);
-        const incomingTime = new Date(r.createdAt || 0).getTime();
-        const existingTime = new Date(existing.createdAt || 0).getTime();
+        const incomingTime = new Date(r.updatedAt || r.createdAt || 0).getTime();
+        const existingTime = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
         if (incomingTime >= existingTime) {
           dispenseMap.set(r.id, { ...existing, ...r });
         }
@@ -1135,6 +1212,7 @@ export function mergeClientWithServer(clientDb: AppDatabase, serverDb: AppDataba
     dispenseRecords: mergedDispenseRecords,
     lateRegistrations: mergedLateRegistrations,
     openingBalances,
+    syncTombstones: mergedTombstones,
     ...(effectiveBoundary ? { resetBoundary: effectiveBoundary } : {}),
   };
 }

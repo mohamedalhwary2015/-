@@ -186,6 +186,17 @@ export function compareOfflineAndOnlineDatabases(
   const offDispenses = offlineDb.dispenseRecords || [];
   const onDispenses = onlineDb.dispenseRecords || [];
 
+  // Collect all Tombstones from both databases
+  const tombstoneIds = new Set<string>();
+  (offlineDb.syncTombstones || []).forEach((t) => {
+    if (t.recordId) tombstoneIds.add(t.recordId);
+    if (t.transactionId) tombstoneIds.add(t.transactionId);
+  });
+  (onlineDb.syncTombstones || []).forEach((t) => {
+    if (t.recordId) tombstoneIds.add(t.recordId);
+    if (t.transactionId) tombstoneIds.add(t.transactionId);
+  });
+
   const onDispenseMap = new Map<string, DispenseRecord>();
   onDispenses.forEach((d) => {
     const key = d.transactionId || d.id;
@@ -249,9 +260,16 @@ export function compareOfflineAndOnlineDatabases(
     const existsOffline = offDispenseMap.has(key) || offDispenseMap.has(d.id);
 
     if (!existsOffline) {
-      const isSeed = isKnownDemoOrSeedTransaction(d.id);
-      const classification: RecordClassification = isSeed ? 'bogus_update_generated' : 'online_only_suspect';
-      const reason = isSeed
+      const isTombstoned = tombstoneIds.has(d.id) || tombstoneIds.has(txId);
+      const isSeed = !isTombstoned && isKnownDemoOrSeedTransaction(d.id);
+      const classification: RecordClassification = isTombstoned
+        ? 'bogus_update_generated'
+        : isSeed
+        ? 'bogus_update_generated'
+        : 'online_only_suspect';
+      const reason = isTombstoned
+        ? 'حركة صرف محذوفة ومعلمة بشاهد قبر (Tombstone) ويجب عدم إحيائها'
+        : isSeed
         ? 'حركة صرف وهمية/تجريبية أنشئت آلياً ولا توجد في نسخة العمل الفعلية'
         : 'حركة صرف موجودة Online فقط وغير مسجلة Offline';
 
@@ -571,6 +589,32 @@ export async function executeProductionRepair(
   // Create deep clone of offline database as the baseline
   const cleanedDb: AppDatabase = JSON.parse(JSON.stringify(offlineDb));
 
+  // Merge tombstones from offline and online
+  const repairTombstonesMap = new Map<string, any>();
+  (offlineDb.syncTombstones || []).forEach((t) => {
+    if (t && (t.recordId || t.transactionId)) {
+      repairTombstonesMap.set(t.recordId || t.transactionId, t);
+    }
+  });
+  (onlineDb.syncTombstones || []).forEach((t) => {
+    if (t && (t.recordId || t.transactionId)) {
+      const key = t.recordId || t.transactionId;
+      if (!repairTombstonesMap.has(key)) {
+        repairTombstonesMap.set(key, t);
+      }
+    }
+  });
+  const mergedRepairTombstones = Array.from(repairTombstonesMap.values());
+  const repairTombstoneIds = new Set<string>();
+  mergedRepairTombstones.forEach((t) => {
+    if (t.recordId) repairTombstoneIds.add(t.recordId);
+    if (t.transactionId) repairTombstoneIds.add(t.transactionId);
+  });
+
+  const isRepairTombstoned = (id: string, txId?: string) => {
+    return repairTombstoneIds.has(id) || (txId ? repairTombstoneIds.has(txId) : false);
+  };
+
   // 1. Filter Supply Transactions:
   // Retain all offline supplies + any online supplies that are NOT in excludedIds
   const cleanSupplies: SupplyTransaction[] = [];
@@ -614,7 +658,7 @@ export async function executeProductionRepair(
 
   (offlineDb.dispenseRecords || []).forEach((d) => {
     const txId = d.transactionId || `tx-${d.id}`;
-    if (!excludedIds.has(d.id) && !excludedIds.has(txId)) {
+    if (!excludedIds.has(d.id) && !excludedIds.has(txId) && !isRepairTombstoned(d.id, d.transactionId)) {
       if (!seenDispenseTxIds.has(txId)) {
         seenDispenseTxIds.add(txId);
         cleanDispenses.push({
@@ -629,7 +673,7 @@ export async function executeProductionRepair(
 
   (onlineDb.dispenseRecords || []).forEach((d) => {
     const txId = d.transactionId || `tx-${d.id}`;
-    if (!excludedIds.has(d.id) && !excludedIds.has(txId)) {
+    if (!excludedIds.has(d.id) && !excludedIds.has(txId) && !isRepairTombstoned(d.id, d.transactionId)) {
       if (!seenDispenseTxIds.has(txId)) {
         seenDispenseTxIds.add(txId);
         cleanDispenses.push({
@@ -724,6 +768,7 @@ export async function executeProductionRepair(
   cleanedDb.dispenseRecords = cleanDispenses;
   cleanedDb.lateRegistrations = cleanLateRegs;
   cleanedDb.stocks = rebuiltStocks;
+  cleanedDb.syncTombstones = mergedRepairTombstones;
   cleanedDb.lastBackupDate = now;
   cleanedDb.version = (cleanedDb.version || 1) + 1;
 

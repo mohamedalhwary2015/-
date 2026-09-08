@@ -133,6 +133,7 @@ export interface DispenseRecord {
   syncedAt?: string;                // توقيت الاعتماد المركزي
   isOfflineCreated?: boolean;       // تم إنشاؤها أوفلاين
   version?: number;                 // رقم إصدار السجل
+  updatedAt?: string;               // توقيت آخر تعديل للسجل
 }
 
 export type LateRegType = 'birth' | 'death'; // ساقط قيد ميلاد / ساقط قيد وفاة
@@ -242,6 +243,20 @@ export interface ResetBoundary {
   reason?: string;
 }
 
+export interface SyncTombstone {
+  id?: string;
+  recordId: string;
+  transactionId?: string;
+  operationType: 'DELETE_DISPENSE' | 'DELETE_SUPPLY' | 'DELETE_LATE_REG';
+  deletedAt: string;
+  deviceId?: string;
+  deletedBy?: string;
+  reason?: string;
+  itemsRestored?: any;
+  synced?: boolean;
+  details?: any;
+}
+
 export interface AppDatabase {
   version: number;
   lastBackupDate: string;
@@ -251,6 +266,7 @@ export interface AppDatabase {
   lateRegistrations: LateRegistrationRecord[];
   openingBalances?: OpeningBalanceRecord;
   resetBoundary?: ResetBoundary;
+  syncTombstones?: SyncTombstone[];
   officeSettings: {
     officeName: string;
     center: string;
@@ -282,7 +298,13 @@ export interface SyncQueueItem {
   transactionId: string;                 // Global Unique Transaction ID
   deviceId: string;                      // معرف الجهاز المنفذ للحركة
   userId: string;                        // الموظف المنفذ
-  operationType: 'DISPENSE' | 'SUPPLY' | 'LATE_REG_ADD' | 'LATE_REG_UPDATE';
+  operationType:
+    | 'DISPENSE'
+    | 'SUPPLY'
+    | 'LATE_REG_ADD'
+    | 'LATE_REG_UPDATE'
+    | 'UPDATE_DISPENSE'
+    | 'DELETE_DISPENSE';
   tableName: 'dispenseRecords' | 'supplyTransactions' | 'lateRegistrations';
   recordId: string;                      // معرف السجل المستهدف
   payload: any;                          // بيانات الحركة كاملة

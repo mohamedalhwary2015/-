@@ -4,8 +4,7 @@ import {
   exportDatabaseBackup, 
   importDatabaseBackup, 
   exportToCSV, 
-  INITIAL_DATABASE,
-  saveDatabase 
+  performFactoryReset 
 } from '../storage/db';
 import { 
   FileSpreadsheet, 
@@ -173,11 +172,20 @@ export const ReportsAndBackup: React.FC<ReportsAndBackupProps> = ({
     reader.readAsText(file);
   };
 
-  const handleReset = () => {
-    if (confirm('تحذير: هل أنت متأكد من إعادة ضبط البيانات إلى الحالة الافتراضية الأولية؟ يفضل أخذ نسخة احتياطية أولاً.')) {
-      saveDatabase(INITIAL_DATABASE);
-      onDatabaseUpdate(INITIAL_DATABASE);
-      alert('تمت إعادة ضبط البيانات بنجاح.');
+  const handleReset = async () => {
+    if (confirm('تحذير شديد: هل أنت متأكد من إعادة ضبط المصنع والتصفير الشامل لكافة السجلات والأرصدة؟ سيتم تصفير الأرصدة إلى 0 وحذف كافة الحركات.')) {
+      try {
+        const result = await performFactoryReset({
+          resetBy: db.officeSettings?.currentEmployee || 'كاتب صحة سفلاق',
+          reason: 'تصفير شامل وإعادة ضبط المصنع من شاشة التقارير والنسخ الاحتياطي',
+          preserveOfficeSettings: true,
+        });
+        onDatabaseUpdate(result.database);
+        alert(result.message);
+      } catch (err: any) {
+        console.error('Factory reset error:', err);
+        alert('حدث خطأ أثناء التصفير الشامل: ' + (err?.message || 'خطأ غير معروف'));
+      }
     }
   };
 

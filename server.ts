@@ -144,13 +144,46 @@ function mergeDatabasesNonDestructive(serverDb: any, clientDb: any): any {
     return t > boundaryTime;
   };
 
-  // 1. Dispense Records: Union by ID with Reset Boundary filtering
+  // 0. Merge Sync Tombstones
+  const tombstoneMap = new Map<string, any>();
+  (serverDb.syncTombstones || []).forEach((t: any) => {
+    if (t && (t.recordId || t.transactionId)) {
+      tombstoneMap.set(t.recordId || t.transactionId, t);
+    }
+  });
+  (clientDb.syncTombstones || []).forEach((t: any) => {
+    if (t && (t.recordId || t.transactionId)) {
+      const key = t.recordId || t.transactionId;
+      if (!tombstoneMap.has(key)) {
+        tombstoneMap.set(key, t);
+      } else {
+        const existing = tombstoneMap.get(key);
+        const incomingTime = new Date(t.deletedAt || 0).getTime();
+        const existingTime = new Date(existing.deletedAt || 0).getTime();
+        if (incomingTime >= existingTime) {
+          tombstoneMap.set(key, { ...existing, ...t });
+        }
+      }
+    }
+  });
+  const mergedTombstones = Array.from(tombstoneMap.values());
+  const tombstoneIds = new Set<string>();
+  mergedTombstones.forEach((t: any) => {
+    if (t.recordId) tombstoneIds.add(t.recordId);
+    if (t.transactionId) tombstoneIds.add(t.transactionId);
+  });
+
+  const isTombstoned = (r: any) => {
+    return Boolean((r.id && tombstoneIds.has(r.id)) || (r.transactionId && tombstoneIds.has(r.transactionId)));
+  };
+
+  // 1. Dispense Records: Union by ID with Reset Boundary & Tombstone filtering
   const dispenseMap = new Map<string, any>();
   (serverDb.dispenseRecords || []).forEach((r: any) => {
-    if (r && r.id && isAfterReset(r)) dispenseMap.set(r.id, r);
+    if (r && r.id && isAfterReset(r) && !isTombstoned(r)) dispenseMap.set(r.id, r);
   });
   (clientDb.dispenseRecords || []).forEach((r: any) => {
-    if (r && r.id && isAfterReset(r)) {
+    if (r && r.id && isAfterReset(r) && !isTombstoned(r)) {
       if (!dispenseMap.has(r.id)) {
         dispenseMap.set(r.id, r);
       } else {
@@ -271,6 +304,7 @@ function mergeDatabasesNonDestructive(serverDb: any, clientDb: any): any {
     dispenseRecords: mergedDispenseRecords,
     lateRegistrations: mergedLateRegistrations,
     openingBalances: mergedOpeningBalances,
+    syncTombstones: mergedTombstones,
     ...(effectiveBoundary ? { resetBoundary: effectiveBoundary } : {}),
   };
 }
@@ -422,6 +456,22 @@ async function startServer() {
         if (item.operationType === 'DISPENSE') {
           const rec = item.payload;
           if (rec) {
+            // Check if record is tombstoned
+            if (
+              db.syncTombstones &&
+              db.syncTombstones.some(
+                (t: any) => t.recordId === rec.id || (rec.transactionId && t.transactionId === rec.transactionId)
+              )
+            ) {
+              results.push({
+                syncId: item.syncId,
+                transactionId: txId,
+                status: 'ignored_tombstoned',
+                message: 'تم تجاوز حركة الصرف لأنها محذوفة مسبقاً (Tombstone)',
+              });
+              continue;
+            }
+
             rec.transactionId = txId;
             rec.deviceId = rec.deviceId || deviceId || item.deviceId;
             rec.syncStatus = 'synced';
@@ -458,6 +508,180 @@ async function startServer() {
               message: 'تم تسجيل حركة الصرف واعتماد الخصم',
             });
           }
+        } else if (item.operationType === 'UPDATE_DISPENSE') {
+          const updates = item.payload;
+          if (updates) {
+            const targetId = updates.id || item.recordId;
+            const targetTxId = updates.transactionId || txId;
+
+            // Check if record is tombstoned
+            if (
+              db.syncTombstones &&
+              db.syncTombstones.some(
+                (t: any) => t.recordId === targetId || (targetTxId && t.transactionId === targetTxId)
+              )
+            ) {
+              results.push({
+                syncId: item.syncId,
+                transactionId: txId,
+                status: 'ignored_tombstoned',
+                message: 'تم تجاهل التعديل لأن حركة الصرف محذوفة مسبقاً (Tombstone)',
+              });
+              continue;
+            }
+
+            const existingIdx = db.dispenseRecords.findIndex(
+              (d: any) => d.id === targetId || (targetTxId && d.transactionId === targetTxId)
+            );
+
+            if (existingIdx !== -1) {
+              const existing = db.dispenseRecords[existingIdx];
+
+              // Adjust stock differences if itemsDeducted changed
+              if (
+                updates.itemsDeducted &&
+                JSON.stringify(updates.itemsDeducted) !== JSON.stringify(existing.itemsDeducted)
+              ) {
+                const oldTotals: Record<string, number> = {};
+                (existing.itemsDeducted || []).forEach((it: any) => {
+                  oldTotals[it.stockCategory] = (oldTotals[it.stockCategory] || 0) + Number(it.quantity || 0);
+                });
+                const newTotals: Record<string, number> = {};
+                updates.itemsDeducted.forEach((it: any) => {
+                  newTotals[it.stockCategory] = (newTotals[it.stockCategory] || 0) + Number(it.quantity || 0);
+                });
+
+                const allCats = new Set([...Object.keys(oldTotals), ...Object.keys(newTotals)]);
+                allCats.forEach((cat) => {
+                  const oldQty = oldTotals[cat] || 0;
+                  const newQty = newTotals[cat] || 0;
+                  const diff = newQty - oldQty;
+                  if (diff !== 0 && db.stocks[cat]) {
+                    if (diff > 0) {
+                      db.stocks[cat].currentStock = Math.max(0, db.stocks[cat].currentStock - diff);
+                      db.stocks[cat].totalDispensed = (db.stocks[cat].totalDispensed || 0) + diff;
+                    } else {
+                      const restoreQty = Math.abs(diff);
+                      db.stocks[cat].currentStock = (db.stocks[cat].currentStock || 0) + restoreQty;
+                      db.stocks[cat].totalDispensed = Math.max(0, (db.stocks[cat].totalDispensed || 0) - restoreQty);
+                    }
+                    db.stocks[cat].lastUpdated = now;
+                  }
+                });
+              }
+
+              db.dispenseRecords[existingIdx] = {
+                ...existing,
+                ...updates,
+                id: existing.id,
+                transactionId: existing.transactionId || targetTxId,
+                updatedAt: updates.updatedAt || now,
+                syncStatus: 'synced',
+                syncedAt: now,
+              };
+
+              dbModified = true;
+              processedTransactionIds.add(txId);
+              results.push({
+                syncId: item.syncId,
+                transactionId: txId,
+                status: 'processed',
+                message: 'تم تحديث حركة الصرف وتعديل الأرصدة بدقة',
+              });
+            } else {
+              // Record not on server yet: insert with stock deduction
+              const rec = {
+                ...updates,
+                id: targetId,
+                transactionId: targetTxId,
+                deviceId: updates.deviceId || deviceId || item.deviceId,
+                syncStatus: 'synced',
+                syncedAt: now,
+                updatedAt: updates.updatedAt || now,
+              };
+              if (Array.isArray(rec.itemsDeducted)) {
+                rec.itemsDeducted.forEach((it: any) => {
+                  const stock = db.stocks[it.stockCategory];
+                  if (stock) {
+                    stock.currentStock = Math.max(0, stock.currentStock - Number(it.quantity || 0));
+                    stock.totalDispensed = (stock.totalDispensed || 0) + Number(it.quantity || 0);
+                    stock.lastUpdated = now;
+                  }
+                });
+              }
+              db.dispenseRecords.unshift(rec);
+              dbModified = true;
+              processedTransactionIds.add(txId);
+              results.push({
+                syncId: item.syncId,
+                transactionId: txId,
+                status: 'processed',
+                message: 'تم اعتماد حركة الصرف المحدثة وإضافتها للخادم',
+              });
+            }
+          }
+        } else if (item.operationType === 'DELETE_DISPENSE') {
+          if (!db.syncTombstones) db.syncTombstones = [];
+          const targetId = item.recordId || item.payload?.recordId;
+          const targetTxId = item.payload?.transactionId || txId;
+
+          // 1. Idempotency Check: if record is already tombstoned
+          const alreadyTombstoned = db.syncTombstones.some(
+            (t: any) => t.recordId === targetId || (targetTxId && t.transactionId === targetTxId)
+          );
+
+          if (alreadyTombstoned) {
+            // Already deleted! Do NOT restore stock again
+            results.push({
+              syncId: item.syncId,
+              transactionId: txId,
+              status: 'already_processed',
+              message: 'حركة الصرف محذوفة مسبقاً (Tombstone Idempotent OK)',
+            });
+            continue;
+          }
+
+          // 2. Find record in server dispenseRecords
+          const existingIdx = db.dispenseRecords.findIndex(
+            (d: any) => d.id === targetId || (targetTxId && d.transactionId === targetTxId)
+          );
+
+          if (existingIdx !== -1) {
+            const existing = db.dispenseRecords[existingIdx];
+            // Return deducted items to inventory stock ONCE
+            if (Array.isArray(existing.itemsDeducted)) {
+              existing.itemsDeducted.forEach((it: any) => {
+                const stock = db.stocks[it.stockCategory];
+                if (stock) {
+                  stock.currentStock = (stock.currentStock || 0) + Number(it.quantity || 0);
+                  stock.totalDispensed = Math.max(0, (stock.totalDispensed || 0) - Number(it.quantity || 0));
+                  stock.lastUpdated = now;
+                }
+              });
+            }
+            // Remove record from dispenseRecords
+            db.dispenseRecords.splice(existingIdx, 1);
+          }
+
+          // 3. Register Tombstone in server database
+          db.syncTombstones.push({
+            recordId: targetId,
+            transactionId: targetTxId,
+            operationType: 'DELETE_DISPENSE',
+            deletedAt: item.payload?.deletedAt || now,
+            deviceId: item.payload?.deviceId || item.deviceId || deviceId,
+            deletedBy: item.payload?.deletedBy || item.userId || 'كاتب صحة سفلاق',
+            details: item.payload?.details,
+          });
+
+          processedTransactionIds.add(txId);
+          dbModified = true;
+          results.push({
+            syncId: item.syncId,
+            transactionId: txId,
+            status: 'processed',
+            message: 'تم حذف حركة الصرف واعتماد إعادة الكميات للمخزون وتسجيل Tombstone',
+          });
         } else if (item.operationType === 'SUPPLY') {
           const supply = item.payload;
           if (supply) {
@@ -648,8 +872,16 @@ async function startServer() {
         return t > minValidTime;
       });
 
+      const newTombstones = (db.syncTombstones || []).filter((r: any) => {
+        const t = new Date(r.deletedAt || 0).getTime();
+        return t > minValidTime;
+      });
+
       const hasChanges =
-        newDispenses.length > 0 || newSupplies.length > 0 || newLateRegs.length > 0;
+        newDispenses.length > 0 ||
+        newSupplies.length > 0 ||
+        newLateRegs.length > 0 ||
+        newTombstones.length > 0;
 
       res.json({
         success: true,
@@ -659,6 +891,7 @@ async function startServer() {
           dispenseRecords: newDispenses,
           supplyTransactions: newSupplies,
           lateRegistrations: newLateRegs,
+          syncTombstones: newTombstones,
         },
         approvedStocks: db.stocks,
         syncToken: db.lastBackupDate,

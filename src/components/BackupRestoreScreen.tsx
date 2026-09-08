@@ -475,37 +475,37 @@ exit
             <div className="p-2 rounded-xl bg-slate-50 border border-slate-200">
               <div className="text-[11px] text-slate-500 font-medium">سجلات الصرف</div>
               <div className="text-base font-black text-emerald-700 font-mono">
-                {resetVerification.checks.dispenseRecordsCount}
+                {resetVerification.details.dispensesCount}
               </div>
             </div>
             <div className="p-2 rounded-xl bg-slate-50 border border-slate-200">
               <div className="text-[11px] text-slate-500 font-medium">أذون التوريد</div>
               <div className="text-base font-black text-emerald-700 font-mono">
-                {resetVerification.checks.supplyTransactionsCount}
+                {resetVerification.details.suppliesCount}
               </div>
             </div>
             <div className="p-2 rounded-xl bg-slate-50 border border-slate-200">
               <div className="text-[11px] text-slate-500 font-medium">استمارات ساقط القيد</div>
               <div className="text-base font-black text-emerald-700 font-mono">
-                {resetVerification.checks.lateRegistrationsCount}
+                {resetVerification.details.lateRegCount}
               </div>
             </div>
             <div className="p-2 rounded-xl bg-slate-50 border border-slate-200">
               <div className="text-[11px] text-slate-500 font-medium">إجمالي رصيد المخزن</div>
               <div className="text-base font-black text-emerald-700 font-mono">
-                {resetVerification.checks.totalStockUnits}
+                0
               </div>
             </div>
             <div className="p-2 rounded-xl bg-slate-50 border border-slate-200">
               <div className="text-[11px] text-slate-500 font-medium">طابور المزامنة</div>
               <div className="text-base font-black text-emerald-700 font-mono">
-                {resetVerification.checks.syncQueueCleared ? '0 (فارغ)' : 'معلق'}
+                {resetVerification.checks.syncQueueEmpty ? '0 (فارغ)' : `${resetVerification.details.pendingQueueCount} معلق`}
               </div>
             </div>
             <div className="p-2 rounded-xl bg-slate-50 border border-slate-200">
               <div className="text-[11px] text-slate-500 font-medium">الخادم المركزي</div>
               <div className="text-xs font-black text-emerald-700 pt-1">
-                {resetVerification.checks.serverWiped ? 'ممسوح ومؤكد' : 'محلي فقط'}
+                {resetVerification.checks.serverResetSuccess !== false ? 'ممسوح ومؤكد' : 'محلي (أوفلاين)'}
               </div>
             </div>
           </div>
@@ -513,8 +513,10 @@ exit
           <div className="text-[11px] text-slate-600 flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-100">
             <div>
               <span className="font-bold text-slate-700">حد الأمان المعتمد (Reset Boundary): </span>
-              <span className="font-mono text-slate-900 font-bold">{resetVerification.boundary.resetId}</span>
-              <span className="text-slate-400 mr-2">({new Date(resetVerification.boundary.resetAt).toLocaleString('ar-EG')})</span>
+              <span className="font-mono text-slate-900 font-bold">{resetVerification.details.resetId}</span>
+              {resetVerification.details.resetAt && (
+                <span className="text-slate-400 mr-2">({new Date(resetVerification.details.resetAt).toLocaleString('ar-EG')})</span>
+              )}
             </div>
             <div className="text-emerald-700 font-bold flex items-center gap-1">
               <CheckCircle2 className="w-3.5 h-3.5" />

@@ -180,18 +180,26 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
 
   const handleDeleteRecord = (r: DispenseRecord) => {
     const isConfirmed = window.confirm(
-      `تأكيد حذف حركة الصرف:\nهل أنت متأكد من حذف حركة الصرف الخاصة بالمواطن/المستلم: "${r.beneficiaryName}"؟\n\nتنبيه: سيتم إرجاع كافة الكميات المصروفة تلقائياً إلى رصيد المخزن بمكتب صحة سفلاق.`
+      `تأكيد حذف حركة الصرف:\nهل أنت متأكد من حذف حركة الصرف الخاصة بالمواطن/المستلم: "${r.beneficiaryName}"؟\n\nتنبيه: سيتم إرجاع كافة الكميات المصروفة تلقائياً إلى رصيد المخزن بمكتب صحة سفلاق وتسجيل علامة الحذف (Tombstone) لضمان عدم عودة السجل بعد المزامنة.`
     );
     if (!isConfirmed) return;
 
-    const updatedDb = deleteDispenseRecord(r.id);
-    onDatabaseUpdate(updatedDb);
+    try {
+      const updatedDb = deleteDispenseRecord(r.id, db.officeSettings.currentEmployee || 'كاتب صحة سفلاق');
+      onDatabaseUpdate(updatedDb);
+    } catch (err: any) {
+      alert(`حدث خطأ أثناء حذف السجل: ${err.message || err}`);
+    }
   };
 
   const handleSaveEditRecord = (id: string, updates: Partial<DispenseRecord>) => {
-    const updatedDb = updateDispenseRecord(id, updates);
-    onDatabaseUpdate(updatedDb);
-    alert('تم حفظ التعديلات بنجاح وتحديث الرصيد وسجل الوثائق المنصرفة.');
+    try {
+      const updatedDb = updateDispenseRecord(id, updates, db.officeSettings.currentEmployee || 'كاتب صحة سفلاق');
+      onDatabaseUpdate(updatedDb);
+      alert('تم حفظ التعديلات بنجاح وتحديث الرصيد وسجل الوثائق المنصرفة.');
+    } catch (err: any) {
+      alert(`حدث خطأ أثناء تعديل السجل: ${err.message || err}`);
+    }
   };
 
   // Handle clicking a document card in single-select mode
@@ -347,8 +355,19 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  // Active non-tombstoned records
+  const tombstoneIds = new Set<string>();
+  (db.syncTombstones || []).forEach((t) => {
+    if (t.recordId) tombstoneIds.add(t.recordId);
+    if (t.transactionId) tombstoneIds.add(t.transactionId);
+  });
+
+  const activeRecords = (db.dispenseRecords || []).filter(
+    (r) => !tombstoneIds.has(r.id) && !(r.transactionId && tombstoneIds.has(r.transactionId))
+  );
+
   // Filtered records for display
-  const filteredRecords = db.dispenseRecords.filter(r => {
+  const filteredRecords = activeRecords.filter(r => {
     const s = searchTerm.toLowerCase().trim();
     if (!s) return true;
     return (
@@ -925,7 +944,7 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
               سجل الوثائق والمستندات المنصرفة بمكتب صحة سفلاق
             </h3>
             <p className="text-xs text-slate-500">
-              إجمالي المعاملات المسجلة: {db.dispenseRecords.length} معاملة
+              إجمالي المعاملات المسجلة: {activeRecords.length} معاملة
             </p>
           </div>
 

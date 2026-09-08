@@ -45,9 +45,12 @@ export const EditDispenseModal: React.FC<EditDispenseModalProps> = ({
   const [newItemCategory, setNewItemCategory] = useState<StockCategory>('birth_certificates');
   const [newItemQuantity, setNewItemQuantity] = useState<number>(1);
 
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   // Sync state whenever record prop updates
   useEffect(() => {
     if (!record) return;
+    setIsSubmitting(false);
     setBeneficiaryName(record.beneficiaryName || '');
     setDate(record.date || '');
     setTime(record.time || '');
@@ -102,30 +105,38 @@ export const EditDispenseModal: React.FC<EditDispenseModalProps> = ({
       return;
     }
 
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+
     const numericPayment =
       paymentAmount.trim() !== '' && !isNaN(Number(paymentAmount))
         ? Number(paymentAmount)
         : undefined;
 
-    onSave(record.id, {
-      beneficiaryName: beneficiaryName.trim(),
-      date,
-      time,
-      gender,
-      dispenseType,
-      dispenseEventType: dispenseEventType.trim() || undefined,
-      certificateNumber: certificateNumber.trim() || undefined,
-      healthCardReceiptNumber: healthCardReceiptNumber.trim() || undefined,
-      paymentAmount: numericPayment,
-      fatherName: fatherName.trim() || undefined,
-      motherName: motherName.trim() || undefined,
-      reporterName: reporterName.trim() || undefined,
-      reporterRelation: reporterRelation.trim() || undefined,
-      dispensedBy: dispensedBy.trim(),
-      notes: notes.trim() || undefined,
-      itemsDeducted,
-    });
-    onClose();
+    try {
+      onSave(record.id, {
+        beneficiaryName: beneficiaryName.trim(),
+        date,
+        time,
+        gender,
+        dispenseType,
+        dispenseEventType: dispenseEventType.trim() || undefined,
+        certificateNumber: certificateNumber.trim() || undefined,
+        healthCardReceiptNumber: healthCardReceiptNumber.trim() || undefined,
+        paymentAmount: numericPayment,
+        fatherName: fatherName.trim() || undefined,
+        motherName: motherName.trim() || undefined,
+        reporterName: reporterName.trim() || undefined,
+        reporterRelation: reporterRelation.trim() || undefined,
+        dispensedBy: dispensedBy.trim(),
+        notes: notes.trim() || undefined,
+        itemsDeducted,
+      });
+      onClose();
+    } catch (err: any) {
+      alert(`حدث خطأ أثناء حفظ التعديل: ${err.message || err}`);
+      setIsSubmitting(false);
+    }
   };
 
   const stockList = Object.values(stocks) as StockItem[];
@@ -491,10 +502,13 @@ export const EditDispenseModal: React.FC<EditDispenseModalProps> = ({
             </button>
             <button
               type="submit"
-              className="px-6 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-bold shadow-md transition flex items-center gap-1.5 cursor-pointer"
+              disabled={isSubmitting}
+              className={`px-6 py-2 rounded-xl text-white font-bold shadow-md transition flex items-center gap-1.5 cursor-pointer ${
+                isSubmitting ? 'bg-emerald-400 cursor-not-allowed opacity-80' : 'bg-emerald-700 hover:bg-emerald-800'
+              }`}
             >
               <CheckCircle2 className="w-4 h-4" />
-              <span>حفظ التعديلات وتحديث الرصيد</span>
+              <span>{isSubmitting ? 'جارٍ حفظ التعديلات...' : 'حفظ التعديلات وتحديث الرصيد'}</span>
             </button>
           </div>
         </form>

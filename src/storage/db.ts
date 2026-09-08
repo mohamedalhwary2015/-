@@ -10,6 +10,7 @@ import {
   SerialRange,
   StockCategory, 
   SupplyTransaction,
+  SyncTombstone,
   STOCK_CATEGORIES_INFO
 } from '../types';
 
@@ -676,37 +677,52 @@ export function addDispenseRecord(
 
 export function updateDispenseRecord(
   id: string,
-  updates: Partial<DispenseRecord>
+  updates: Partial<DispenseRecord>,
+  employeeName?: string
 ): AppDatabase {
   const db = getDatabase();
   const recordIndex = db.dispenseRecords.findIndex((r) => r.id === id);
   if (recordIndex === -1) return db;
 
   const oldRecord = db.dispenseRecords[recordIndex];
+  const now = new Date().toISOString();
 
-  // If itemsDeducted is being updated, adjust stock differences
+  // If itemsDeducted is being updated, calculate exact differences
   if (
     updates.itemsDeducted &&
     JSON.stringify(updates.itemsDeducted) !== JSON.stringify(oldRecord.itemsDeducted)
   ) {
-    // 1. Revert previous deductions back to stock
-    if (oldRecord.itemsDeducted && Array.isArray(oldRecord.itemsDeducted)) {
-      oldRecord.itemsDeducted.forEach((it) => {
-        const stock = db.stocks[it.stockCategory];
-        if (stock) {
-          stock.currentStock += it.quantity;
-          stock.totalDispensed = Math.max(0, stock.totalDispensed - it.quantity);
-          stock.lastUpdated = new Date().toISOString();
-        }
-      });
-    }
-    // 2. Apply new deductions
+    const oldTotals: Partial<Record<StockCategory, number>> = {};
+    (oldRecord.itemsDeducted || []).forEach((it) => {
+      oldTotals[it.stockCategory] = (oldTotals[it.stockCategory] || 0) + Number(it.quantity || 0);
+    });
+    const newTotals: Partial<Record<StockCategory, number>> = {};
     updates.itemsDeducted.forEach((it) => {
-      const stock = db.stocks[it.stockCategory];
-      if (stock) {
-        stock.currentStock = Math.max(0, stock.currentStock - it.quantity);
-        stock.totalDispensed += it.quantity;
-        stock.lastUpdated = new Date().toISOString();
+      newTotals[it.stockCategory] = (newTotals[it.stockCategory] || 0) + Number(it.quantity || 0);
+    });
+
+    const allCategories = new Set([
+      ...Object.keys(oldTotals),
+      ...Object.keys(newTotals),
+    ]) as Set<StockCategory>;
+
+    allCategories.forEach((cat) => {
+      const oldQty = oldTotals[cat] || 0;
+      const newQty = newTotals[cat] || 0;
+      const diff = newQty - oldQty; // e.g. 3 - 2 = +1 more dispensed
+      if (diff !== 0) {
+        const stock = db.stocks[cat];
+        if (stock) {
+          if (diff > 0) {
+            stock.currentStock = Math.max(0, stock.currentStock - diff);
+            stock.totalDispensed = (stock.totalDispensed || 0) + diff;
+          } else {
+            const restoreQty = Math.abs(diff);
+            stock.currentStock += restoreQty;
+            stock.totalDispensed = Math.max(0, (stock.totalDispensed || 0) - restoreQty);
+          }
+          stock.lastUpdated = now;
+        }
       }
     });
   }
@@ -714,6 +730,9 @@ export function updateDispenseRecord(
   const updatedRecord: DispenseRecord = {
     ...oldRecord,
     ...updates,
+    id: oldRecord.id, // Strictly preserve original ID
+    transactionId: oldRecord.transactionId || oldRecord.id, // Strictly preserve transaction ID
+    updatedAt: now,
     syncStatus: 'pending',
   };
 
@@ -723,8 +742,8 @@ export function updateDispenseRecord(
   enqueueSyncItem({
     transactionId: updatedRecord.transactionId || updatedRecord.id,
     deviceId: updatedRecord.deviceId || getOrCreateDeviceId(),
-    userId: updatedRecord.dispensedBy || 'كاتب صحة سفلاق',
-    operationType: 'DISPENSE',
+    userId: employeeName || updatedRecord.dispensedBy || db.officeSettings?.currentEmployee || 'كاتب صحة سفلاق',
+    operationType: 'UPDATE_DISPENSE',
     tableName: 'dispenseRecords',
     recordId: updatedRecord.id,
     payload: updatedRecord,
@@ -734,26 +753,82 @@ export function updateDispenseRecord(
   return db;
 }
 
-export function deleteDispenseRecord(id: string): AppDatabase {
+export function deleteDispenseRecord(id: string, deletedBy?: string): AppDatabase {
   const db = getDatabase();
-  const recordIndex = db.dispenseRecords.findIndex((r) => r.id === id);
-  if (recordIndex === -1) return db;
+  const record = db.dispenseRecords.find((r) => r.id === id);
 
-  const record = db.dispenseRecords[recordIndex];
+  // Initialize syncTombstones array if missing
+  if (!db.syncTombstones) {
+    db.syncTombstones = [];
+  }
 
-  // Return deducted items to inventory stock
+  // Idempotency check: verify if recordId or transactionId is already in tombstones
+  const isAlreadyTombstoned = db.syncTombstones.some(
+    (t) => t.recordId === id || (record?.transactionId && t.transactionId === record.transactionId)
+  );
+
+  if (isAlreadyTombstoned) {
+    // Already processed: do NOT restore stock again (Idempotency guarantee)
+    db.dispenseRecords = db.dispenseRecords.filter((r) => r.id !== id);
+    saveDatabase(db);
+    return db;
+  }
+
+  if (!record) {
+    return db;
+  }
+
+  const now = new Date().toISOString();
+  const txId = record.transactionId || record.id;
+  const devId = record.deviceId || getOrCreateDeviceId();
+
+  // 1. Return deducted quantities to inventory stock once
   if (record.itemsDeducted && Array.isArray(record.itemsDeducted)) {
     record.itemsDeducted.forEach((item) => {
       const stock = db.stocks[item.stockCategory];
       if (stock) {
-        stock.currentStock += item.quantity;
-        stock.totalDispensed = Math.max(0, stock.totalDispensed - item.quantity);
-        stock.lastUpdated = new Date().toISOString();
+        stock.currentStock += Number(item.quantity || 0);
+        stock.totalDispensed = Math.max(0, (stock.totalDispensed || 0) - Number(item.quantity || 0));
+        stock.lastUpdated = now;
       }
     });
   }
 
-  db.dispenseRecords.splice(recordIndex, 1);
+  // 2. Register permanent Tombstone locally
+  const tombstone: SyncTombstone = {
+    recordId: record.id,
+    transactionId: txId,
+    operationType: 'DELETE_DISPENSE',
+    deletedAt: now,
+    deviceId: devId,
+    deletedBy: deletedBy || 'كاتب صحة سفلاق',
+    details: {
+      beneficiaryName: record.beneficiaryName,
+      itemsRestored: record.itemsDeducted,
+    },
+  };
+  db.syncTombstones.push(tombstone);
+
+  // 3. Remove record from active dispense records array
+  db.dispenseRecords = db.dispenseRecords.filter((r) => r.id !== id);
+
+  // 4. Enqueue Sync Item with DELETE_DISPENSE
+  enqueueSyncItem({
+    transactionId: txId,
+    deviceId: devId,
+    userId: tombstone.deletedBy || 'كاتب صحة سفلاق',
+    operationType: 'DELETE_DISPENSE',
+    tableName: 'dispenseRecords',
+    recordId: record.id,
+    payload: {
+      recordId: record.id,
+      transactionId: txId,
+      deviceId: devId,
+      deletedAt: now,
+      deletedBy: tombstone.deletedBy,
+    },
+  }).catch((err) => console.warn('Enqueue delete dispense notice:', err));
+
   saveDatabase(db);
   return db;
 }
@@ -1633,4 +1708,13 @@ export function resetToDemoDatabase(): AppDatabase {
   saveDatabase(INITIAL_DATABASE);
   return INITIAL_DATABASE;
 }
+
+export { verifyDispenseCrudIntegrity } from './dispenseIntegrityVerification';
+
+if (typeof window !== 'undefined') {
+  import('./dispenseIntegrityVerification').then(({ verifyDispenseCrudIntegrity }) => {
+    (window as any).verifyDispenseCrudIntegrity = verifyDispenseCrudIntegrity;
+  }).catch(() => {});
+}
+
 
