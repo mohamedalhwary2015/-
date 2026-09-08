@@ -1,4 +1,4 @@
-import { DispenseRecord, LateRegistrationRecord, StockCategory, StockItem, StockSupplyRecord } from '../types';
+import { DispenseRecord, LateRegistrationRecord, StockCategory, StockItem } from '../types';
 
 export type NormalizedGender = 'male' | 'female' | 'unknown';
 

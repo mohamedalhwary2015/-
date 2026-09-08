@@ -6,6 +6,56 @@ const PENDING_CHANGES_KEY = 'saflaq_pending_changes_flag';
 const DEVICE_ID_KEY = 'saflaq_device_id';
 const LOCAL_SYNC_QUEUE_KEY = 'saflaq_sync_queue_v1';
 
+// Global Factory Reset Lock to block concurrent Auto Sync
+let _factoryResetInProgress = false;
+
+export function isFactoryResetInProgress(): boolean {
+  return _factoryResetInProgress;
+}
+
+export function setFactoryResetInProgress(inProgress: boolean): void {
+  _factoryResetInProgress = inProgress;
+}
+
+/**
+ * Completely purges all pending sync queues in both LocalStorage and IndexedDB
+ */
+export async function clearAllSyncQueueAndLocks(): Promise<void> {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(LOCAL_SYNC_QUEUE_KEY);
+    localStorage.removeItem(PENDING_CHANGES_KEY);
+  } catch (e) {
+    console.warn('Error clearing localStorage sync queue:', e);
+  }
+
+  try {
+    const db = await openDurableDB();
+    if (db) {
+      const tx = db.transaction(QUEUE_STORE, 'readwrite');
+      tx.objectStore(QUEUE_STORE).clear();
+      await new Promise<void>((resolve) => {
+        tx.oncomplete = () => {
+          db.close();
+          resolve();
+        };
+        tx.onerror = () => {
+          db.close();
+          resolve();
+        };
+      });
+    }
+  } catch (e) {
+    console.warn('Error clearing IndexedDB queue:', e);
+  }
+
+  saveAutoSyncConfig({
+    pendingQueueCount: 0,
+    lastSyncMessage: 'تم تفريغ طابور المزامنة بنجاح',
+  });
+  notifyPendingQueueCountChanged();
+}
+
 // ==========================================
 // 0. Device ID and Transaction ID Generation
 // ==========================================
@@ -613,21 +663,28 @@ export async function pullIncrementalChanges(currentDb: AppDatabase): Promise<{
     }
 
     let modified = false;
+    const boundaryTime = currentDb.resetBoundary ? new Date(currentDb.resetBoundary.resetAt).getTime() : 0;
+    const isAfterReset = (r: any) => {
+      if (boundaryTime <= 0) return true;
+      const t = new Date(r.updatedAt || r.syncedAt || r.createdAt || r.date || 0).getTime();
+      return t > boundaryTime;
+    };
 
-    // If server sent full database (e.g. initial connection)
+    // If server sent full database (e.g. initial connection or post-reset full sync)
     if (data.fullSync && data.database) {
       const merged = mergeClientWithServer(currentDb, data.database);
       Object.assign(currentDb, merged);
       modified = true;
     } else if (data.hasChanges && data.changes) {
-      // Non-destructive incremental merge
+      // Non-destructive incremental merge respecting Reset Boundary
       const { dispenseRecords = [], supplyTransactions = [], lateRegistrations = [] } = data.changes;
 
       // 1. Merge Dispenses
-      if (dispenseRecords.length > 0) {
+      const validDispenses = dispenseRecords.filter(isAfterReset);
+      if (validDispenses.length > 0) {
         const dMap = new Map();
         (currentDb.dispenseRecords || []).forEach((r) => dMap.set(r.id, r));
-        dispenseRecords.forEach((r: any) => {
+        validDispenses.forEach((r: any) => {
           if (!dMap.has(r.id)) {
             dMap.set(r.id, r);
           } else {
@@ -639,10 +696,11 @@ export async function pullIncrementalChanges(currentDb: AppDatabase): Promise<{
       }
 
       // 2. Merge Supplies
-      if (supplyTransactions.length > 0) {
+      const validSupplies = supplyTransactions.filter(isAfterReset);
+      if (validSupplies.length > 0) {
         const sMap = new Map();
         (currentDb.supplyTransactions || []).forEach((s) => sMap.set(s.id, s));
-        supplyTransactions.forEach((s: any) => {
+        validSupplies.forEach((s: any) => {
           if (!sMap.has(s.id)) {
             sMap.set(s.id, s);
           }
@@ -652,10 +710,11 @@ export async function pullIncrementalChanges(currentDb: AppDatabase): Promise<{
       }
 
       // 3. Merge Late Registrations
-      if (lateRegistrations.length > 0) {
+      const validLateRegs = lateRegistrations.filter(isAfterReset);
+      if (validLateRegs.length > 0) {
         const lMap = new Map();
         (currentDb.lateRegistrations || []).forEach((l) => lMap.set(l.id, l));
-        lateRegistrations.forEach((l: any) => {
+        validLateRegs.forEach((l: any) => {
           if (!lMap.has(l.id)) {
             lMap.set(l.id, l);
           } else {
@@ -759,6 +818,20 @@ export async function executeAutoSync(
     (dbData.dispenseRecords?.length || 0) +
     (dbData.lateRegistrations?.length || 0) +
     (dbData.supplyTransactions?.length || 0);
+
+  // If a Factory Reset is currently running, strictly abort Auto Sync to avoid re-injecting zombie data
+  if (isFactoryResetInProgress()) {
+    console.log('[AutoSync] Blocked execution because a factory reset is actively in progress.');
+    return {
+      success: false,
+      status: 'pending',
+      message: 'تم تعليق المزامنة التلقائية لوجود عملية تصفير شامل جارية',
+      timestamp: now,
+      totalRecords,
+      serverSaved: false,
+      idbSaved: false,
+    };
+  }
 
   // If auto-sync is explicitly turned off and not triggered manually
   if (!config.enabled && trigger !== 'manual') {
@@ -919,11 +992,33 @@ export function mergeClientWithServer(clientDb: AppDatabase, serverDb: AppDataba
   if (!clientDb) return serverDb;
   if (!serverDb) return clientDb;
 
-  // 1. Dispense Records
+  // Determine effective Reset Boundary
+  const serverBoundary = serverDb.resetBoundary;
+  const clientBoundary = clientDb.resetBoundary;
+  let effectiveBoundary: any = null;
+
+  if (serverBoundary && clientBoundary) {
+    const sTime = new Date(serverBoundary.resetAt || 0).getTime();
+    const cTime = new Date(clientBoundary.resetAt || 0).getTime();
+    effectiveBoundary = cTime >= sTime ? clientBoundary : serverBoundary;
+  } else if (clientBoundary) {
+    effectiveBoundary = clientBoundary;
+  } else if (serverBoundary) {
+    effectiveBoundary = serverBoundary;
+  }
+
+  const boundaryTime = effectiveBoundary ? new Date(effectiveBoundary.resetAt || 0).getTime() : 0;
+  const isAfterReset = (r: any) => {
+    if (boundaryTime <= 0) return true;
+    const t = new Date(r.updatedAt || r.syncedAt || r.createdAt || r.date || 0).getTime();
+    return t > boundaryTime;
+  };
+
+  // 1. Dispense Records: Union by ID with Reset Boundary filtering
   const dispenseMap = new Map<string, any>();
-  (serverDb.dispenseRecords || []).forEach((r) => r?.id && dispenseMap.set(r.id, r));
+  (serverDb.dispenseRecords || []).forEach((r) => r?.id && isAfterReset(r) && dispenseMap.set(r.id, r));
   (clientDb.dispenseRecords || []).forEach((r) => {
-    if (r?.id) {
+    if (r?.id && isAfterReset(r)) {
       if (!dispenseMap.has(r.id)) {
         dispenseMap.set(r.id, r);
       } else {
@@ -937,20 +1032,20 @@ export function mergeClientWithServer(clientDb: AppDatabase, serverDb: AppDataba
     }
   });
 
-  // 2. Supply Transactions
+  // 2. Supply Transactions: Union by ID with Reset Boundary filtering
   const supplyMap = new Map<string, any>();
-  (serverDb.supplyTransactions || []).forEach((s) => s?.id && supplyMap.set(s.id, s));
+  (serverDb.supplyTransactions || []).forEach((s) => s?.id && isAfterReset(s) && supplyMap.set(s.id, s));
   (clientDb.supplyTransactions || []).forEach((s) => {
-    if (s?.id && !supplyMap.has(s.id)) {
+    if (s?.id && isAfterReset(s) && !supplyMap.has(s.id)) {
       supplyMap.set(s.id, s);
     }
   });
 
-  // 3. Late Registrations
+  // 3. Late Registrations: Union by ID with Reset Boundary filtering
   const lateRegMap = new Map<string, any>();
-  (serverDb.lateRegistrations || []).forEach((l) => l?.id && lateRegMap.set(l.id, l));
+  (serverDb.lateRegistrations || []).forEach((l) => l?.id && isAfterReset(l) && lateRegMap.set(l.id, l));
   (clientDb.lateRegistrations || []).forEach((l) => {
-    if (l?.id) {
+    if (l?.id && isAfterReset(l)) {
       if (!lateRegMap.has(l.id)) {
         lateRegMap.set(l.id, l);
       } else {
@@ -984,7 +1079,9 @@ export function mergeClientWithServer(clientDb: AppDatabase, serverDb: AppDataba
     return timeB - timeA;
   });
 
-  const openingBalances = clientDb.openingBalances || serverDb.openingBalances;
+  const openingBalances = effectiveBoundary
+    ? (effectiveBoundary === clientBoundary ? clientDb.openingBalances : serverDb.openingBalances) || clientDb.openingBalances || serverDb.openingBalances
+    : clientDb.openingBalances || serverDb.openingBalances;
 
   // 4. Mathematical Reconstruction of Stocks (Anti-corruption guarantee)
   // Formula: actualBalance = openingStock + sum(validSupplies) - sum(validDispenses) - damagedOrCancelled
@@ -993,7 +1090,7 @@ export function mergeClientWithServer(clientDb: AppDatabase, serverDb: AppDataba
     const sStock = mergedStocks[key];
     const openingQty = openingBalances?.items?.[key]?.openingQuantity !== undefined
       ? Number(openingBalances.items[key].openingQuantity)
-      : Number(clientDb.stocks?.[key]?.openingStock || serverDb.stocks?.[key]?.openingStock || 0);
+      : (effectiveBoundary ? 0 : Number(clientDb.stocks?.[key]?.openingStock || serverDb.stocks?.[key]?.openingStock || 0));
 
     const totalReceived = mergedSupplyTransactions
       .filter((s: any) => s.stockCategory === key)
@@ -1008,14 +1105,16 @@ export function mergeClientWithServer(clientDb: AppDatabase, serverDb: AppDataba
       });
     });
 
-    const damagedOrCancelled = Number(clientDb.stocks?.[key]?.damagedOrCancelled || serverDb.stocks?.[key]?.damagedOrCancelled || 0);
+    const damagedOrCancelled = effectiveBoundary
+      ? 0
+      : Number(clientDb.stocks?.[key]?.damagedOrCancelled || serverDb.stocks?.[key]?.damagedOrCancelled || 0);
     const calculatedCurrent = Math.max(0, openingQty + totalReceived - totalDispensed - damagedOrCancelled);
 
     mergedStocks[key] = {
       ...sStock,
       openingStock: openingQty,
-      openingSerialFrom: openingBalances?.items?.[key]?.serialFrom || sStock.openingSerialFrom || '',
-      openingSerialTo: openingBalances?.items?.[key]?.serialTo || sStock.openingSerialTo || '',
+      openingSerialFrom: openingBalances?.items?.[key]?.serialFrom || (effectiveBoundary ? '' : sStock.openingSerialFrom || ''),
+      openingSerialTo: openingBalances?.items?.[key]?.serialTo || (effectiveBoundary ? '' : sStock.openingSerialTo || ''),
       totalReceived,
       totalDispensed,
       damagedOrCancelled,
@@ -1025,7 +1124,7 @@ export function mergeClientWithServer(clientDb: AppDatabase, serverDb: AppDataba
   }
 
   return {
-    version: Math.max(serverDb.version || 1, clientDb.version || 1),
+    version: Math.max(serverDb.version || 1, clientDb.version || 1) + 1,
     lastBackupDate: new Date().toISOString(),
     officeSettings: {
       ...(serverDb.officeSettings || clientDb.officeSettings),
@@ -1036,6 +1135,7 @@ export function mergeClientWithServer(clientDb: AppDatabase, serverDb: AppDataba
     dispenseRecords: mergedDispenseRecords,
     lateRegistrations: mergedLateRegistrations,
     openingBalances,
+    ...(effectiveBoundary ? { resetBoundary: effectiveBoundary } : {}),
   };
 }
 

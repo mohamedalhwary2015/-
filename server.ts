@@ -120,13 +120,37 @@ function mergeDatabasesNonDestructive(serverDb: any, clientDb: any): any {
   if (!clientDb || typeof clientDb !== 'object') return serverDb || {};
   if (!serverDb || typeof serverDb !== 'object') return clientDb;
 
-  // 1. Dispense Records: Union by ID
+  // Determine effective Reset Boundary
+  const serverBoundary = serverDb.resetBoundary;
+  const clientBoundary = clientDb.resetBoundary;
+  let effectiveBoundary: any = null;
+
+  if (serverBoundary && clientBoundary) {
+    const sTime = new Date(serverBoundary.resetAt || 0).getTime();
+    const cTime = new Date(clientBoundary.resetAt || 0).getTime();
+    effectiveBoundary = cTime >= sTime ? clientBoundary : serverBoundary;
+  } else if (clientBoundary) {
+    effectiveBoundary = clientBoundary;
+  } else if (serverBoundary) {
+    effectiveBoundary = serverBoundary;
+  }
+
+  const boundaryTime = effectiveBoundary ? new Date(effectiveBoundary.resetAt || 0).getTime() : 0;
+
+  // Helper to test if a record was created after the reset boundary
+  const isAfterReset = (r: any) => {
+    if (boundaryTime <= 0) return true;
+    const t = new Date(r.updatedAt || r.syncedAt || r.createdAt || r.date || 0).getTime();
+    return t > boundaryTime;
+  };
+
+  // 1. Dispense Records: Union by ID with Reset Boundary filtering
   const dispenseMap = new Map<string, any>();
   (serverDb.dispenseRecords || []).forEach((r: any) => {
-    if (r && r.id) dispenseMap.set(r.id, r);
+    if (r && r.id && isAfterReset(r)) dispenseMap.set(r.id, r);
   });
   (clientDb.dispenseRecords || []).forEach((r: any) => {
-    if (r && r.id) {
+    if (r && r.id && isAfterReset(r)) {
       if (!dispenseMap.has(r.id)) {
         dispenseMap.set(r.id, r);
       } else {
@@ -145,13 +169,13 @@ function mergeDatabasesNonDestructive(serverDb: any, clientDb: any): any {
     return timeB - timeA;
   });
 
-  // 2. Supply Transactions: Union by ID
+  // 2. Supply Transactions: Union by ID with Reset Boundary filtering
   const supplyMap = new Map<string, any>();
   (serverDb.supplyTransactions || []).forEach((r: any) => {
-    if (r && r.id) supplyMap.set(r.id, r);
+    if (r && r.id && isAfterReset(r)) supplyMap.set(r.id, r);
   });
   (clientDb.supplyTransactions || []).forEach((r: any) => {
-    if (r && r.id) {
+    if (r && r.id && isAfterReset(r)) {
       if (!supplyMap.has(r.id)) {
         supplyMap.set(r.id, r);
       } else {
@@ -166,13 +190,13 @@ function mergeDatabasesNonDestructive(serverDb: any, clientDb: any): any {
     return timeB - timeA;
   });
 
-  // 3. Late Registrations: Union by ID + merge tracking steps
+  // 3. Late Registrations: Union by ID + merge tracking steps with Reset Boundary filtering
   const lateRegMap = new Map<string, any>();
   (serverDb.lateRegistrations || []).forEach((r: any) => {
-    if (r && r.id) lateRegMap.set(r.id, r);
+    if (r && r.id && isAfterReset(r)) lateRegMap.set(r.id, r);
   });
   (clientDb.lateRegistrations || []).forEach((r: any) => {
-    if (r && r.id) {
+    if (r && r.id && isAfterReset(r)) {
       if (!lateRegMap.has(r.id)) {
         lateRegMap.set(r.id, r);
       } else {
@@ -199,8 +223,16 @@ function mergeDatabasesNonDestructive(serverDb: any, clientDb: any): any {
   });
 
   // 4. Stocks: Combine and preserve opening stock and serials
+  // If a reset boundary was active, prefer the state that has been reset
   const mergedStocks = { ...(serverDb.stocks || {}) };
-  if (clientDb.stocks) {
+  if (effectiveBoundary) {
+    const primaryStocks = effectiveBoundary === clientBoundary ? clientDb.stocks : serverDb.stocks;
+    if (primaryStocks) {
+      for (const key of Object.keys(primaryStocks)) {
+        mergedStocks[key] = { ...primaryStocks[key] };
+      }
+    }
+  } else if (clientDb.stocks) {
     for (const key of Object.keys(clientDb.stocks)) {
       if (!mergedStocks[key]) {
         mergedStocks[key] = clientDb.stocks[key];
@@ -223,10 +255,12 @@ function mergeDatabasesNonDestructive(serverDb: any, clientDb: any): any {
   }
 
   // 5. Opening Balances
-  const mergedOpeningBalances = clientDb.openingBalances || serverDb.openingBalances;
+  const mergedOpeningBalances = effectiveBoundary
+    ? (effectiveBoundary === clientBoundary ? clientDb.openingBalances : serverDb.openingBalances) || clientDb.openingBalances || serverDb.openingBalances
+    : clientDb.openingBalances || serverDb.openingBalances;
 
   return {
-    version: Math.max(serverDb.version || 1, clientDb.version || 1),
+    version: Math.max(serverDb.version || 1, clientDb.version || 1) + 1,
     lastBackupDate: new Date().toISOString(),
     officeSettings: {
       ...(serverDb.officeSettings || {}),
@@ -237,6 +271,7 @@ function mergeDatabasesNonDestructive(serverDb: any, clientDb: any): any {
     dispenseRecords: mergedDispenseRecords,
     lateRegistrations: mergedLateRegistrations,
     openingBalances: mergedOpeningBalances,
+    ...(effectiveBoundary ? { resetBoundary: effectiveBoundary } : {}),
   };
 }
 
@@ -367,6 +402,21 @@ async function startServer() {
             message: 'تمت معالجة الحركة مسبقاً (Idempotent OK)',
           });
           continue;
+        }
+
+        // Reset Boundary check: ignore transactions created prior to or at reset boundary
+        if (db.resetBoundary) {
+          const boundaryTime = new Date(db.resetBoundary.resetAt).getTime();
+          const itemTime = new Date(item.payload?.createdAt || item.payload?.date || item.createdAt || 0).getTime();
+          if (itemTime > 0 && itemTime <= boundaryTime) {
+            results.push({
+              syncId: item.syncId,
+              transactionId: txId,
+              status: 'rejected_before_reset',
+              message: 'تم تجاوز الحركة لأنها تسبق تاريخ التصفير الشامل وإعادة ضبط المصنع (Reset Boundary)',
+            });
+            continue;
+          }
         }
 
         if (item.operationType === 'DISPENSE') {
@@ -565,19 +615,37 @@ async function startServer() {
         });
       }
 
+      // If client token is older than or equal to reset boundary, force full clean sync
+      if (db.resetBoundary) {
+        const resetTime = new Date(db.resetBoundary.resetAt).getTime();
+        if (sinceTime <= resetTime) {
+          return res.json({
+            success: true,
+            fullSync: true,
+            database: db,
+            approvedStocks: db.stocks,
+            syncToken: db.lastBackupDate,
+            serverTime: new Date().toISOString(),
+          });
+        }
+      }
+
+      const boundaryTime = db.resetBoundary ? new Date(db.resetBoundary.resetAt).getTime() : 0;
+      const minValidTime = Math.max(sinceTime, boundaryTime);
+
       const newDispenses = (db.dispenseRecords || []).filter((r: any) => {
         const t = new Date(r.syncedAt || r.updatedAt || r.createdAt || 0).getTime();
-        return t > sinceTime;
+        return t > minValidTime;
       });
 
       const newSupplies = (db.supplyTransactions || []).filter((r: any) => {
         const t = new Date(r.syncedAt || r.updatedAt || r.createdAt || 0).getTime();
-        return t > sinceTime;
+        return t > minValidTime;
       });
 
       const newLateRegs = (db.lateRegistrations || []).filter((r: any) => {
         const t = new Date(r.syncedAt || r.updatedAt || r.createdAt || 0).getTime();
-        return t > sinceTime;
+        return t > minValidTime;
       });
 
       const hasChanges =
@@ -691,6 +759,110 @@ async function startServer() {
     } catch (err: any) {
       console.error('Error in /api/repair/apply:', err);
       res.status(500).json({ success: false, message: err.message || 'Internal server error during repair apply' });
+    }
+  });
+
+  // 8. Radical Production Factory Reset Endpoint (POST /api/factory-reset)
+  // Takes an immutable pre-reset backup first, wipes operational collections atomically,
+  // resets all stock balances to zero, clears transaction idempotency registry, and sets Reset Boundary.
+  app.post('/api/factory-reset', (req, res) => {
+    try {
+      const { resetBoundary, clientDatabase, deviceId } = req.body;
+      if (!resetBoundary || !resetBoundary.resetId) {
+        return res.status(400).json({ success: false, message: 'Invalid reset boundary payload' });
+      }
+
+      const currentDb = cachedDatabase || loadDatabaseFromDisk();
+
+      // Step 1: Mandatory pre-reset backup of server DB to disk
+      if (currentDb) {
+        const timestampStr = new Date().toISOString().replace(/[:.]/g, '-');
+        const backupName = `backup-before-factory-reset-${timestampStr}.json`;
+        const backupPath = path.join(BACKUPS_DIR, backupName);
+        fs.writeFileSync(backupPath, JSON.stringify(currentDb, null, 2), 'utf-8');
+        console.log(`[Factory Reset] Mandatory pre-reset backup saved to ${backupName}`);
+      }
+
+      // Step 2: Build clean server database respecting reset boundary
+      const now = resetBoundary.resetAt || new Date().toISOString();
+      const cleanStocks: any = {};
+      const stockKeys = [
+        'birth_certificates',
+        'birth_notifications',
+        'death_certificates',
+        'death_notifications',
+        'health_cards_male',
+        'health_cards_female',
+        'late_reg_under_year',
+        'late_reg_over_year',
+      ];
+
+      const clientStocks = clientDatabase?.stocks || currentDb?.stocks || {};
+      for (const key of stockKeys) {
+        const orig = clientStocks[key] || {};
+        cleanStocks[key] = {
+          ...orig,
+          id: key,
+          currentStock: 0,
+          totalReceived: 0,
+          totalDispensed: 0,
+          damagedOrCancelled: 0,
+          openingStock: 0,
+          openingSerialFrom: '',
+          openingSerialTo: '',
+          lastUpdated: now,
+        };
+      }
+
+      const cleanDb: any = {
+        version: ((currentDb?.version || 1) + 1),
+        lastBackupDate: now,
+        officeSettings: clientDatabase?.officeSettings || currentDb?.officeSettings || {
+          officeName: 'مكتب صحة سفلاق',
+          center: 'مركز ساقلتة',
+          directorate: 'مديرية الشؤون الصحية بسوهاج',
+          governorate: 'محافظة سوهاج',
+          currentEmployee: resetBoundary.resetBy || 'كاتب صحة سفلاق',
+        },
+        stocks: cleanStocks,
+        supplyTransactions: [],
+        dispenseRecords: [],
+        lateRegistrations: [],
+        openingBalances: clientDatabase?.openingBalances || {
+          asOfDate: now.split('T')[0],
+          minuteNumber: '',
+          inventoryKeeper: resetBoundary.resetBy || 'كاتب صحة سفلاق',
+          committeeLeader: '',
+          notes: 'رصيد صفري نظيف عقب إعادة ضبط المصنع والتصفير الشامل',
+          createdAt: now,
+          updatedAt: now,
+          items: {},
+        },
+        resetBoundary: {
+          ...resetBoundary,
+          resetAt: now,
+        },
+      };
+
+      // Step 3: Clear processedTransactionIds so pre-reset transactions cannot linger
+      processedTransactionIds.clear();
+      saveProcessedTransactions();
+
+      // Step 4: Atomically save clean database to disk
+      saveDatabaseToDisk(cleanDb);
+
+      console.log(`[Factory Reset] Server operational data wiped cleanly. Reset ID: ${resetBoundary.resetId} by device ${deviceId || 'unknown'}`);
+
+      res.json({
+        success: true,
+        message: 'تم تصفير قاعدة البيانات المركزية ومسح كافة الحركات وإنشاء حد الأمان Reset Boundary بنجاح',
+        resetBoundary: cleanDb.resetBoundary,
+        database: cleanDb,
+        serverTime: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      console.error('Error during /api/factory-reset:', err);
+      res.status(500).json({ success: false, message: err.message || 'Internal server error during factory reset' });
     }
   });
 

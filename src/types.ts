@@ -233,6 +233,15 @@ export interface OpeningBalanceRecord {
   updatedAt: string;
 }
 
+export interface ResetBoundary {
+  resetId: string;
+  resetAt: string; // ISO timestamp of reset boundary
+  resetBy: string;
+  resetVersion: number;
+  backupId?: string;
+  reason?: string;
+}
+
 export interface AppDatabase {
   version: number;
   lastBackupDate: string;
@@ -241,6 +250,7 @@ export interface AppDatabase {
   dispenseRecords: DispenseRecord[];
   lateRegistrations: LateRegistrationRecord[];
   openingBalances?: OpeningBalanceRecord;
+  resetBoundary?: ResetBoundary;
   officeSettings: {
     officeName: string;
     center: string;

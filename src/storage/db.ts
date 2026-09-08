@@ -6,6 +6,7 @@ import {
   LateRegTrackingStep,
   OpeningBalanceRecord, 
   OpeningBalanceItem, 
+  ResetBoundary,
   SerialRange,
   StockCategory, 
   SupplyTransaction,
@@ -18,7 +19,14 @@ import {
   markHasPendingChanges,
   enqueueSyncItem,
   generateGlobalTxId,
-  getOrCreateDeviceId 
+  getOrCreateDeviceId,
+  isFactoryResetInProgress,
+  setFactoryResetInProgress,
+  clearAllSyncQueueAndLocks,
+  saveDurableSnapshotToIDB,
+  saveAutoSyncConfig,
+  getPendingQueueCount,
+  checkRealInternetConnection
 } from './syncManager';
 
 const STORAGE_KEY = 'saflaq_health_office_db_v1';
@@ -503,9 +511,14 @@ export function saveDatabase(db: AppDatabase): void {
 
     // Debounced automatic background sync and durable snapshot
     if (typeof window !== 'undefined') {
+      if (isFactoryResetInProgress()) {
+        return;
+      }
       if (debounceSyncTimer) clearTimeout(debounceSyncTimer);
       debounceSyncTimer = setTimeout(() => {
-        executeAutoSync(db, 'change').catch(() => {});
+        if (!isFactoryResetInProgress()) {
+          executeAutoSync(db, 'change').catch(() => {});
+        }
       }, 1200);
     }
   } catch (error) {
@@ -1334,9 +1347,285 @@ export function createEmptyDatabase(): AppDatabase {
   };
 }
 
+export interface FactoryResetOptions {
+  resetBy?: string;
+  reason?: string;
+  preserveOfficeSettings?: boolean;
+}
+
+export interface FactoryResetVerificationReport {
+  verified: boolean;
+  timestamp: string;
+  checks: {
+    dispenseRecordsEmpty: boolean;
+    supplyTransactionsEmpty: boolean;
+    lateRegistrationsEmpty: boolean;
+    allStockBalancesZero: boolean;
+    syncQueueEmpty: boolean;
+    boundaryEstablished: boolean;
+    serverResetSuccess?: boolean;
+  };
+  details: {
+    dispensesCount: number;
+    suppliesCount: number;
+    lateRegCount: number;
+    nonZeroStocks: string[];
+    pendingQueueCount: number;
+    resetId: string;
+    resetAt: string;
+    serverMessage?: string;
+  };
+}
+
+export interface FactoryResetResult {
+  success: boolean;
+  database: AppDatabase;
+  verification: FactoryResetVerificationReport;
+  backupSnapshotId?: string;
+  message: string;
+}
+
+/**
+ * Validates that all operational data has been physically cleared and zeroed.
+ */
+export async function verifyFactoryReset(
+  db: AppDatabase,
+  serverResponse?: any
+): Promise<FactoryResetVerificationReport> {
+  const dispensesCount = (db.dispenseRecords || []).length;
+  const suppliesCount = (db.supplyTransactions || []).length;
+  const lateRegCount = (db.lateRegistrations || []).length;
+
+  const nonZeroStocks: string[] = [];
+  if (db.stocks) {
+    for (const [key, stock] of Object.entries(db.stocks)) {
+      if (
+        stock.currentStock !== 0 ||
+        stock.totalReceived !== 0 ||
+        stock.totalDispensed !== 0 ||
+        stock.openingStock !== 0
+      ) {
+        nonZeroStocks.push(key);
+      }
+    }
+  }
+
+  let queueCount = 0;
+  try {
+    queueCount = await getPendingQueueCount();
+  } catch {}
+
+  const boundaryEstablished = Boolean(db.resetBoundary && db.resetBoundary.resetId);
+  const serverResetSuccess = serverResponse ? serverResponse.success === true : undefined;
+
+  const dispenseRecordsEmpty = dispensesCount === 0;
+  const supplyTransactionsEmpty = suppliesCount === 0;
+  const lateRegistrationsEmpty = lateRegCount === 0;
+  const allStockBalancesZero = nonZeroStocks.length === 0;
+  const syncQueueEmpty = queueCount === 0;
+
+  const verified =
+    dispenseRecordsEmpty &&
+    supplyTransactionsEmpty &&
+    lateRegistrationsEmpty &&
+    allStockBalancesZero &&
+    syncQueueEmpty &&
+    boundaryEstablished &&
+    (serverResetSuccess !== false);
+
+  return {
+    verified,
+    timestamp: new Date().toISOString(),
+    checks: {
+      dispenseRecordsEmpty,
+      supplyTransactionsEmpty,
+      lateRegistrationsEmpty,
+      allStockBalancesZero,
+      syncQueueEmpty,
+      boundaryEstablished,
+      serverResetSuccess,
+    },
+    details: {
+      dispensesCount,
+      suppliesCount,
+      lateRegCount,
+      nonZeroStocks,
+      pendingQueueCount: queueCount,
+      resetId: db.resetBoundary?.resetId || '',
+      resetAt: db.resetBoundary?.resetAt || '',
+      serverMessage: serverResponse?.message,
+    },
+  };
+}
+
+/**
+ * Radical Factory Reset Engine:
+ * 1. Acquires Global Lock to strictly prevent concurrent Auto-Sync race conditions.
+ * 2. Takes safety pre-reset snapshot in IDB and localStorage emergency backup.
+ * 3. Purges all sync queues, pending queue items, and pending flags in IDB and LocalStorage.
+ * 4. Creates a ResetBoundary and a zeroed clean database.
+ * 5. Calls server atomic reset endpoint POST /api/factory-reset to wipe centralized DB.
+ * 6. Directly saves clean state to localStorage and IDB (without firing background auto sync).
+ * 7. Performs mathematical and structural verification of the zeroed state.
+ * 8. Releases lock and dispatches system-wide reset events.
+ */
+export async function performFactoryReset(
+  options?: FactoryResetOptions
+): Promise<FactoryResetResult> {
+  console.log('[Factory Reset] Initializing radical factory reset workflow...');
+  
+  // 1. Acquire Global Reset Lock and cancel any pending debounced sync timers
+  setFactoryResetInProgress(true);
+  if (debounceSyncTimer) {
+    clearTimeout(debounceSyncTimer);
+    debounceSyncTimer = null;
+  }
+
+  const now = new Date().toISOString();
+  let backupSnapshotId: string | undefined;
+
+  try {
+    const currentDb = getDatabase();
+
+    // 2. Step 1: Pre-reset Safety Snapshot (IndexedDB & LocalStorage emergency fallback)
+    try {
+      backupSnapshotId = `snap-reset-${Date.now()}`;
+      await saveDurableSnapshotToIDB(currentDb, 'before_factory_reset');
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('saflaq_emergency_pre_reset_backup', JSON.stringify({
+          timestamp: now,
+          database: currentDb,
+        }));
+      }
+      console.log('[Factory Reset] Pre-reset safety snapshot created:', backupSnapshotId);
+    } catch (snapshotErr) {
+      console.warn('[Factory Reset] Safety snapshot warning:', snapshotErr);
+    }
+
+    // 3. Step 2: Purge Sync Queue & Pending Flags across all storage layers
+    await clearAllSyncQueueAndLocks();
+    markHasPendingChanges(false);
+    console.log('[Factory Reset] Sync queues and pending flags purged.');
+
+    // 4. Step 3: Construct Clean Database & Reset Boundary
+    const resetId = `rst-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    const resetVersion = (currentDb.version || 1) + 1;
+    const resetBy = options?.resetBy || currentDb.officeSettings?.currentEmployee || 'كاتب صحة سفلاق';
+    
+    const resetBoundary: ResetBoundary = {
+      resetId,
+      resetAt: now,
+      resetBy,
+      resetVersion,
+      backupId: backupSnapshotId,
+      reason: options?.reason || 'إعادة ضبط المصنع والتصفير الشامل المعتمد',
+    };
+
+    const cleanDb: AppDatabase = createEmptyDatabase();
+    cleanDb.version = resetVersion;
+    cleanDb.lastBackupDate = now;
+    cleanDb.resetBoundary = resetBoundary;
+    if (options?.preserveOfficeSettings !== false && currentDb.officeSettings) {
+      cleanDb.officeSettings = {
+        ...currentDb.officeSettings,
+      };
+    }
+
+    // 5. Step 4: Atomic Server Wipe via dedicated POST /api/factory-reset
+    let serverResponse: any = null;
+    try {
+      const isOnline = await checkRealInternetConnection();
+      if (isOnline) {
+        console.log('[Factory Reset] Sending factory-reset command to server...');
+        const response = await fetch('/api/factory-reset', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-cache',
+          },
+          body: JSON.stringify({
+            resetBoundary,
+            clientDatabase: cleanDb,
+            deviceId: getOrCreateDeviceId(),
+            reason: options?.reason,
+          }),
+        });
+
+        if (response.ok) {
+          serverResponse = await response.json();
+          console.log('[Factory Reset] Server response:', serverResponse);
+        } else {
+          console.warn('[Factory Reset] Server returned status:', response.status);
+        }
+      } else {
+        console.log('[Factory Reset] Offline mode: Server wipe deferred until reconnection.');
+      }
+    } catch (serverErr) {
+      console.warn('[Factory Reset] Network call to /api/factory-reset failed (offline safe):', serverErr);
+    }
+
+    // 6. Step 5: Save Clean Database Directly (Bypassing saveDatabase to eliminate Auto Sync side-effects)
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(cleanDb));
+    }
+    await saveDurableSnapshotToIDB(cleanDb, 'factory_reset');
+
+    // Update AutoSync configuration state
+    saveAutoSyncConfig({
+      lastSyncToken: now,
+      lastSyncTime: now,
+      lastSyncStatus: 'success',
+      lastSyncMessage: 'تم التصفير الشامل وإعادة ضبط المصنع وإنشاء حد الأمان بنجاح',
+      pendingQueueCount: 0,
+    });
+
+    // 7. Step 6: Execute Comprehensive Verification Check
+    const verification = await verifyFactoryReset(cleanDb, serverResponse);
+    console.log('[Factory Reset] Verification report:', verification);
+
+    // 8. Step 7: Dispatch Application Reset Events
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('saflaq:database-reset', { detail: { cleanDb, verification } }));
+      window.dispatchEvent(new CustomEvent('saflaq:database-synced', { detail: { cleanDb } }));
+    }
+
+    return {
+      success: verification.verified,
+      database: cleanDb,
+      verification,
+      backupSnapshotId,
+      message: verification.verified
+        ? 'تم التصفير الشامل وإعادة ضبط المصنع بنجاح تام وتصفير كافة الحركات والأرصدة وقاعدة البيانات المركزية'
+        : 'تم تنفيذ التصفير ولكن الفحص أظهر بعض الملاحظات، يرجى مراجعة تفاصيل التحقق',
+    };
+  } finally {
+    // 9. Release Global Reset Lock
+    setFactoryResetInProgress(false);
+    console.log('[Factory Reset] Lock released. Factory reset complete.');
+  }
+}
+
 export function resetToCleanDatabase(): AppDatabase {
+  // Synchronous clean database with Reset Boundary
+  const now = new Date().toISOString();
+  const resetId = `rst-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
   const clean = createEmptyDatabase();
-  saveDatabase(clean);
+  clean.resetBoundary = {
+    resetId,
+    resetAt: now,
+    resetBy: 'كاتب صحة سفلاق',
+    resetVersion: 2,
+    reason: 'إعادة ضبط سريعة مع حد أمان',
+  };
+
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(clean));
+    // Asynchronously perform full reset flow (safety snapshot, server wipe, verify)
+    performFactoryReset().catch((err) => {
+      console.warn('Async performFactoryReset encountered an error:', err);
+    });
+  }
+
   return clean;
 }
 

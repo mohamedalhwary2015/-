@@ -8,7 +8,9 @@ import {
   INITIAL_DATABASE, 
   saveDatabase,
   resetToCleanDatabase,
-  resetToDemoDatabase
+  resetToDemoDatabase,
+  performFactoryReset,
+  FactoryResetVerificationReport
 } from '../storage/db';
 import {
   HardDrive,
@@ -84,6 +86,8 @@ export const BackupRestoreScreen: React.FC<BackupRestoreScreenProps> = ({
   const [restoreConfirmedCheck, setRestoreConfirmedCheck] = useState<boolean>(false);
   const [restoreSuccessMessage, setRestoreSuccessMessage] = useState<string | null>(null);
   const [isRestoring, setIsRestoring] = useState<boolean>(false);
+  const [isResetting, setIsResetting] = useState<boolean>(false);
+  const [resetVerification, setResetVerification] = useState<FactoryResetVerificationReport | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -215,12 +219,30 @@ export const BackupRestoreScreen: React.FC<BackupRestoreScreenProps> = ({
     setShowCleanResetModal(true);
   };
 
-  // 1. Clean Slate Factory Reset (Clears all balances to 0 and removes all movements)
-  const handleCleanFactoryReset = () => {
-    const cleanDb = resetToCleanDatabase();
-    onDatabaseUpdate(cleanDb);
-    setShowCleanResetModal(false);
-    setRestoreSuccessMessage('تم بنجاح تصفير جميع الأرصدة إلى (0) ومسح كافة حركات الصرف والتوريد وساقط القيد بالكامل. المنظومة نظيفة وجاهزة لبدء العمل الفعلي لمكتب صحة سفلاق.');
+  // 1. Clean Slate Factory Reset (Physically wipes all operational data and establishes Reset Boundary)
+  const handleCleanFactoryReset = async () => {
+    setIsResetting(true);
+    try {
+      const result = await performFactoryReset({
+        resetBy: db.officeSettings?.currentEmployee || 'كاتب صحة سفلاق',
+        reason: 'تصفير شامل وإعادة ضبط المصنع المعتمد لمكتب صحة سفلاق',
+        preserveOfficeSettings: true,
+      });
+
+      onDatabaseUpdate(result.database);
+      setResetVerification(result.verification);
+      setShowCleanResetModal(false);
+      setRestoreSuccessMessage(
+        result.verification.verified
+          ? 'تم بنجاح التصفير الشامل وإعادة ضبط المصنع وتصفير كافة الأرصدة وحذف جميع الحركات وتثبيت حد الأمان المعتمد.'
+          : 'تم تنفيذ التصفير الشامل ولكن يُرجى مراجعة تفاصيل التحقق للتأكد من حالة الخادم المركزي.'
+      );
+    } catch (err: any) {
+      console.error('Factory reset error:', err);
+      alert('حدث خطأ أثناء تنفيذ التصفير الشامل: ' + (err?.message || 'خطأ غير معروف'));
+    } finally {
+      setIsResetting(false);
+    }
   };
 
   // 2. Demo Data Reset (Restores sample records for testing)
@@ -428,6 +450,77 @@ exit
           >
             إغلاق
           </button>
+        </div>
+      )}
+
+      {/* FACTORY RESET VERIFICATION AUDIT REPORT */}
+      {resetVerification && (
+        <div className="p-4 md:p-5 rounded-2xl bg-white border-2 border-emerald-500 shadow-sm space-y-3 animate-in fade-in">
+          <div className="flex items-center justify-between border-b border-emerald-100 pb-3">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="w-5 h-5 text-emerald-600" />
+              <h4 className="text-sm font-black text-slate-900">
+                تقرير التحقق الفعلي من نجاح التصفير الشامل وإعادة ضبط المصنع (Verification Audit)
+              </h4>
+            </div>
+            <button
+              onClick={() => setResetVerification(null)}
+              className="text-xs text-slate-400 hover:text-slate-700 cursor-pointer"
+            >
+              إغلاق التقرير
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-center text-xs">
+            <div className="p-2 rounded-xl bg-slate-50 border border-slate-200">
+              <div className="text-[11px] text-slate-500 font-medium">سجلات الصرف</div>
+              <div className="text-base font-black text-emerald-700 font-mono">
+                {resetVerification.checks.dispenseRecordsCount}
+              </div>
+            </div>
+            <div className="p-2 rounded-xl bg-slate-50 border border-slate-200">
+              <div className="text-[11px] text-slate-500 font-medium">أذون التوريد</div>
+              <div className="text-base font-black text-emerald-700 font-mono">
+                {resetVerification.checks.supplyTransactionsCount}
+              </div>
+            </div>
+            <div className="p-2 rounded-xl bg-slate-50 border border-slate-200">
+              <div className="text-[11px] text-slate-500 font-medium">استمارات ساقط القيد</div>
+              <div className="text-base font-black text-emerald-700 font-mono">
+                {resetVerification.checks.lateRegistrationsCount}
+              </div>
+            </div>
+            <div className="p-2 rounded-xl bg-slate-50 border border-slate-200">
+              <div className="text-[11px] text-slate-500 font-medium">إجمالي رصيد المخزن</div>
+              <div className="text-base font-black text-emerald-700 font-mono">
+                {resetVerification.checks.totalStockUnits}
+              </div>
+            </div>
+            <div className="p-2 rounded-xl bg-slate-50 border border-slate-200">
+              <div className="text-[11px] text-slate-500 font-medium">طابور المزامنة</div>
+              <div className="text-base font-black text-emerald-700 font-mono">
+                {resetVerification.checks.syncQueueCleared ? '0 (فارغ)' : 'معلق'}
+              </div>
+            </div>
+            <div className="p-2 rounded-xl bg-slate-50 border border-slate-200">
+              <div className="text-[11px] text-slate-500 font-medium">الخادم المركزي</div>
+              <div className="text-xs font-black text-emerald-700 pt-1">
+                {resetVerification.checks.serverWiped ? 'ممسوح ومؤكد' : 'محلي فقط'}
+              </div>
+            </div>
+          </div>
+
+          <div className="text-[11px] text-slate-600 flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-100">
+            <div>
+              <span className="font-bold text-slate-700">حد الأمان المعتمد (Reset Boundary): </span>
+              <span className="font-mono text-slate-900 font-bold">{resetVerification.boundary.resetId}</span>
+              <span className="text-slate-400 mr-2">({new Date(resetVerification.boundary.resetAt).toLocaleString('ar-EG')})</span>
+            </div>
+            <div className="text-emerald-700 font-bold flex items-center gap-1">
+              <CheckCircle2 className="w-3.5 h-3.5" />
+              <span>تم إحباط دمج أي حركات سابقة لهذا التوقيت تلقائياً</span>
+            </div>
+          </div>
         </div>
       )}
 
@@ -834,12 +927,12 @@ exit
 
               <button
                 onClick={handleCleanFactoryReset}
-                disabled={!cleanResetConsent}
+                disabled={!cleanResetConsent || isResetting}
                 id="btn-confirm-clean-factory-reset"
                 className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs md:text-sm font-black shadow-lg transition flex items-center gap-2 cursor-pointer"
               >
-                <RotateCcw className="w-4 h-4" />
-                <span>تنفيذ التصفير الشامل والبدء من الصفر</span>
+                <RotateCcw className={`w-4 h-4 ${isResetting ? 'animate-spin' : ''}`} />
+                <span>{isResetting ? 'جارٍ تنفيذ التصفير الشامل والمسح الحقيقي...' : 'تنفيذ التصفير الشامل والبدء من الصفر'}</span>
               </button>
             </div>
           </div>

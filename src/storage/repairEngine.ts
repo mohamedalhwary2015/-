@@ -768,3 +768,171 @@ export async function executeProductionRepair(
     removedCount,
   };
 }
+
+export interface DatabaseIntegrityReport {
+  isValid: boolean;
+  timestamp: string;
+  duplicateTransactions: { id: string; type: string; count: number }[];
+  orphanedRecords: { id: string; type: string; reason: string }[];
+  bogusOrDemoRecords: { id: string; type: string; reason: string }[];
+  stockDiscrepancies: { category: StockCategory; expectedStock: number; storedStock: number; diff: number }[];
+  preResetGhostRecords: { id: string; type: string; date: string }[];
+  issuesSummary: string[];
+}
+
+/**
+ * Deep integrity validation to detect duplicates, test records, ghost records, and stock discrepancies.
+ */
+export function validateDatabaseIntegrity(db: AppDatabase): DatabaseIntegrityReport {
+  const timestamp = new Date().toISOString();
+  const duplicateTransactions: { id: string; type: string; count: number }[] = [];
+  const orphanedRecords: { id: string; type: string; reason: string }[] = [];
+  const bogusOrDemoRecords: { id: string; type: string; reason: string }[] = [];
+  const stockDiscrepancies: { category: StockCategory; expectedStock: number; storedStock: number; diff: number }[] = [];
+  const preResetGhostRecords: { id: string; type: string; date: string }[] = [];
+  const issuesSummary: string[] = [];
+
+  const boundaryTime = db.resetBoundary ? new Date(db.resetBoundary.resetAt).getTime() : 0;
+
+  // 1. Check duplicate and test supply transactions
+  const supplyIdCounts = new Map<string, number>();
+  (db.supplyTransactions || []).forEach((s) => {
+    const key = s.transactionId || s.id;
+    supplyIdCounts.set(key, (supplyIdCounts.get(key) || 0) + 1);
+
+    if (isKnownDemoOrSeedTransaction(s.id, s.documentNumber)) {
+      bogusOrDemoRecords.push({ id: s.id, type: 'supply', reason: 'معرف أو مستند تجريبي وهمي' });
+    }
+
+    if (boundaryTime > 0) {
+      const t = new Date(s.createdAt || s.date || 0).getTime();
+      if (t <= boundaryTime) {
+        preResetGhostRecords.push({ id: s.id, type: 'supply', date: s.date });
+      }
+    }
+  });
+
+  supplyIdCounts.forEach((count, id) => {
+    if (count > 1) {
+      duplicateTransactions.push({ id, type: 'supply', count });
+    }
+  });
+
+  // 2. Check duplicate and test dispense records
+  const dispenseIdCounts = new Map<string, number>();
+  (db.dispenseRecords || []).forEach((d) => {
+    const key = d.transactionId || d.id;
+    dispenseIdCounts.set(key, (dispenseIdCounts.get(key) || 0) + 1);
+
+    if (isKnownDemoOrSeedTransaction(d.id, d.certificateNumber || d.notificationNumber)) {
+      bogusOrDemoRecords.push({ id: d.id, type: 'dispense', reason: 'معرف أو شهادة تجريبية وهمية' });
+    }
+
+    if (boundaryTime > 0) {
+      const t = new Date(d.createdAt || d.date || 0).getTime();
+      if (t <= boundaryTime) {
+        preResetGhostRecords.push({ id: d.id, type: 'dispense', date: d.date });
+      }
+    }
+  });
+
+  dispenseIdCounts.forEach((count, id) => {
+    if (count > 1) {
+      duplicateTransactions.push({ id, type: 'dispense', count });
+    }
+  });
+
+  // 3. Check duplicate and test late registrations
+  const lateRegIdCounts = new Map<string, number>();
+  (db.lateRegistrations || []).forEach((l) => {
+    const key = l.transactionId || l.id;
+    lateRegIdCounts.set(key, (lateRegIdCounts.get(key) || 0) + 1);
+
+    if (isKnownDemoOrSeedTransaction(l.id, l.formNumber)) {
+      bogusOrDemoRecords.push({ id: l.id, type: 'late_registration', reason: 'طلب ساقط قيد تجريبي وهمي' });
+    }
+
+    if (boundaryTime > 0) {
+      const t = new Date(l.createdAt || l.submissionDate || 0).getTime();
+      if (t <= boundaryTime) {
+        preResetGhostRecords.push({ id: l.id, type: 'late_registration', date: l.submissionDate });
+      }
+    }
+  });
+
+  lateRegIdCounts.forEach((count, id) => {
+    if (count > 1) {
+      duplicateTransactions.push({ id, type: 'late_registration', count });
+    }
+  });
+
+  // 4. Verify stock arithmetic consistency
+  if (db.stocks) {
+    const allCats = Object.keys(STOCK_CATEGORIES_INFO) as StockCategory[];
+    allCats.forEach((cat) => {
+      const stock = db.stocks?.[cat];
+      if (!stock) return;
+
+      const openingQty =
+        db.openingBalances?.items?.[cat]?.openingQuantity !== undefined
+          ? Number(db.openingBalances.items[cat].openingQuantity)
+          : Number(stock.openingStock || 0);
+
+      const received = (db.supplyTransactions || [])
+        .filter((s) => s.stockCategory === cat)
+        .reduce((sum, s) => sum + Number(s.quantity || 0), 0);
+
+      let dispensed = 0;
+      (db.dispenseRecords || []).forEach((d) => {
+        (d.itemsDeducted || []).forEach((it) => {
+          if (it.stockCategory === cat) {
+            dispensed += Number(it.quantity || 0);
+          }
+        });
+      });
+
+      const damaged = Number(stock.damagedOrCancelled || 0);
+      const expected = Math.max(0, openingQty + received - dispensed - damaged);
+
+      if (stock.currentStock !== expected) {
+        stockDiscrepancies.push({
+          category: cat,
+          expectedStock: expected,
+          storedStock: stock.currentStock,
+          diff: stock.currentStock - expected,
+        });
+      }
+    });
+  }
+
+  // Compile issues summary
+  if (duplicateTransactions.length > 0) {
+    issuesSummary.push(`تم اكتشاف ${duplicateTransactions.length} حركة مكررة.`);
+  }
+  if (bogusOrDemoRecords.length > 0) {
+    issuesSummary.push(`تم اكتشاف ${bogusOrDemoRecords.length} سجل تجريبي وهمي.`);
+  }
+  if (preResetGhostRecords.length > 0) {
+    issuesSummary.push(`تم اكتشاف ${preResetGhostRecords.length} حركة شبحية ترجع لما قبل حد التصفير الأخير.`);
+  }
+  if (stockDiscrepancies.length > 0) {
+    issuesSummary.push(`تم اكتشاف ${stockDiscrepancies.length} انحراف رياضي في أرصدة الأصناف.`);
+  }
+
+  const isValid =
+    duplicateTransactions.length === 0 &&
+    bogusOrDemoRecords.length === 0 &&
+    preResetGhostRecords.length === 0 &&
+    stockDiscrepancies.length === 0;
+
+  return {
+    isValid,
+    timestamp,
+    duplicateTransactions,
+    orphanedRecords,
+    bogusOrDemoRecords,
+    stockDiscrepancies,
+    preResetGhostRecords,
+    issuesSummary,
+  };
+}
