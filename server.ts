@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import { runFullIntegrityCheck } from './src/services/stockService';
 
 const PORT = 3000;
 const DATA_DIR = path.join(process.cwd(), 'data');
@@ -18,7 +19,7 @@ if (!fs.existsSync(BACKUPS_DIR)) {
 
 // In-memory cached database and idempotency registry
 let cachedDatabase: any = null;
-let processedTransactionIds = new Set<string>();
+let processedOperationKeys = new Set<string>();
 
 function loadProcessedTransactions(): Set<string> {
   try {
@@ -26,11 +27,11 @@ function loadProcessedTransactions(): Set<string> {
       const raw = fs.readFileSync(PROCESSED_TX_FILE, 'utf-8');
       const list = JSON.parse(raw);
       if (Array.isArray(list)) {
-        processedTransactionIds = new Set<string>(list);
+        processedOperationKeys = new Set<string>(list);
       }
     }
   } catch (err) {
-    console.error('Failed to load processed transactions:', err);
+    console.error('Failed to load processed operations:', err);
   }
 
   // Register all existing historical transactions from DB into idempotency registry
@@ -39,31 +40,39 @@ function loadProcessedTransactions(): Set<string> {
     (db.dispenseRecords || []).forEach((r: any) => {
       const txId = r.transactionId || `tx-${r.id}`;
       r.transactionId = txId;
-      processedTransactionIds.add(txId);
+      processedOperationKeys.add(`DISPENSE:${r.id}`);
+      processedOperationKeys.add(`DISPENSE:${txId}`);
     });
     (db.supplyTransactions || []).forEach((r: any) => {
       const txId = r.transactionId || `tx-${r.id}`;
       r.transactionId = txId;
-      processedTransactionIds.add(txId);
+      processedOperationKeys.add(`SUPPLY:${r.id}`);
+      processedOperationKeys.add(`SUPPLY:${txId}`);
     });
     (db.lateRegistrations || []).forEach((r: any) => {
       const txId = r.transactionId || `tx-${r.id}`;
       r.transactionId = txId;
-      processedTransactionIds.add(txId);
+      processedOperationKeys.add(`LATE_REG_ADD:${r.id}`);
+      processedOperationKeys.add(`LATE_REG_ADD:${txId}`);
+    });
+    (db.syncTombstones || []).forEach((t: any) => {
+      if (t.operationKey) processedOperationKeys.add(t.operationKey);
+      if (t.recordId) processedOperationKeys.add(`${t.operationType}:${t.recordId}`);
+      if (t.transactionId) processedOperationKeys.add(`${t.operationType}:${t.transactionId}`);
     });
   }
-  return processedTransactionIds;
+  return processedOperationKeys;
 }
 
 function saveProcessedTransactions() {
   try {
     fs.writeFileSync(
       PROCESSED_TX_FILE,
-      JSON.stringify(Array.from(processedTransactionIds), null, 2),
+      JSON.stringify(Array.from(processedOperationKeys), null, 2),
       'utf-8'
     );
   } catch (err) {
-    console.error('Failed to save processed transactions:', err);
+    console.error('Failed to save processed operations:', err);
   }
 }
 
@@ -202,13 +211,13 @@ function mergeDatabasesNonDestructive(serverDb: any, clientDb: any): any {
     return timeB - timeA;
   });
 
-  // 2. Supply Transactions: Union by ID with Reset Boundary filtering
+  // 2. Supply Transactions: Union by ID with Reset Boundary & Tombstone filtering
   const supplyMap = new Map<string, any>();
   (serverDb.supplyTransactions || []).forEach((r: any) => {
-    if (r && r.id && isAfterReset(r)) supplyMap.set(r.id, r);
+    if (r && r.id && isAfterReset(r) && !isTombstoned(r)) supplyMap.set(r.id, r);
   });
   (clientDb.supplyTransactions || []).forEach((r: any) => {
-    if (r && r.id && isAfterReset(r)) {
+    if (r && r.id && isAfterReset(r) && !isTombstoned(r)) {
       if (!supplyMap.has(r.id)) {
         supplyMap.set(r.id, r);
       } else {
@@ -223,13 +232,13 @@ function mergeDatabasesNonDestructive(serverDb: any, clientDb: any): any {
     return timeB - timeA;
   });
 
-  // 3. Late Registrations: Union by ID + merge tracking steps with Reset Boundary filtering
+  // 3. Late Registrations: Union by ID + merge tracking steps with Reset Boundary & Tombstone filtering
   const lateRegMap = new Map<string, any>();
   (serverDb.lateRegistrations || []).forEach((r: any) => {
-    if (r && r.id && isAfterReset(r)) lateRegMap.set(r.id, r);
+    if (r && r.id && isAfterReset(r) && !isTombstoned(r)) lateRegMap.set(r.id, r);
   });
   (clientDb.lateRegistrations || []).forEach((r: any) => {
-    if (r && r.id && isAfterReset(r)) {
+    if (r && r.id && isAfterReset(r) && !isTombstoned(r)) {
       if (!lateRegMap.has(r.id)) {
         lateRegMap.set(r.id, r);
       } else {
@@ -344,6 +353,31 @@ async function startServer() {
     });
   });
 
+  // 1.1 Full Integrity & Audit check endpoint
+  app.get('/api/integrity-check', (req, res) => {
+    try {
+      const db = cachedDatabase || loadDatabaseFromDisk();
+      if (!db) {
+        return res.status(500).json({ success: false, message: 'Database not initialized on server' });
+      }
+      const report = runFullIntegrityCheck(db);
+      res.json({
+        success: true,
+        report,
+        databaseSummary: {
+          dispenseCount: db.dispenseRecords?.length || 0,
+          supplyCount: db.supplyTransactions?.length || 0,
+          lateRegCount: db.lateRegistrations?.length || 0,
+          tombstoneCount: db.syncTombstones?.length || 0,
+          lastBackupDate: db.lastBackupDate,
+        },
+      });
+    } catch (err: any) {
+      console.error('Error in /api/integrity-check:', err);
+      res.status(500).json({ success: false, message: err.message || 'Error running integrity check' });
+    }
+  });
+
   // 2. Fetch central database (GET /api/sync)
   app.get('/api/sync', (req, res) => {
     let db = cachedDatabase;
@@ -425,15 +459,20 @@ async function startServer() {
 
       for (const item of items) {
         const txId = item.transactionId || item.syncId;
-        if (!txId) continue;
+        const opType = item.operationType;
+        const recId = item.recordId || item.payload?.id || item.payload?.recordId || '';
+        const opKey = item.operationKey || `${opType}:${recId}:${item.syncId || txId}`;
 
-        // Idempotency check: if transaction already processed, return success without re-applying
-        if (processedTransactionIds.has(txId)) {
+        if (!txId && !opKey) continue;
+
+        // Idempotency check: if exact operation already processed, return success without re-applying
+        if (processedOperationKeys.has(opKey) || (item.syncId && processedOperationKeys.has(item.syncId))) {
           results.push({
             syncId: item.syncId,
             transactionId: txId,
+            operationKey: opKey,
             status: 'already_processed',
-            message: 'تمت معالجة الحركة مسبقاً (Idempotent OK)',
+            message: 'تمت معالجة العملية مسبقاً (Idempotent OK)',
           });
           continue;
         }
@@ -446,6 +485,7 @@ async function startServer() {
             results.push({
               syncId: item.syncId,
               transactionId: txId,
+              operationKey: opKey,
               status: 'rejected_before_reset',
               message: 'تم تجاوز الحركة لأنها تسبق تاريخ التصفير الشامل وإعادة ضبط المصنع (Reset Boundary)',
             });
@@ -466,6 +506,7 @@ async function startServer() {
               results.push({
                 syncId: item.syncId,
                 transactionId: txId,
+                operationKey: opKey,
                 status: 'ignored_tombstoned',
                 message: 'تم تجاوز حركة الصرف لأنها محذوفة مسبقاً (Tombstone)',
               });
@@ -477,33 +518,36 @@ async function startServer() {
             rec.syncStatus = 'synced';
             rec.syncedAt = now;
 
-            // Deduct stock centrally according to standard rules
-            if (Array.isArray(rec.itemsDeducted)) {
-              rec.itemsDeducted.forEach((it: any) => {
-                const stock = db.stocks[it.stockCategory];
-                if (stock) {
-                  stock.currentStock = Math.max(0, stock.currentStock - Number(it.quantity || 0));
-                  stock.totalDispensed = (stock.totalDispensed || 0) + Number(it.quantity || 0);
-                  stock.lastUpdated = now;
-                }
-              });
-            }
-
-            // Insert or update in dispenseRecords
+            // Check if record already exists in server dispenseRecords
             const existingIdx = db.dispenseRecords.findIndex(
               (d: any) => d.id === rec.id || (d.transactionId && d.transactionId === txId)
             );
+
             if (existingIdx !== -1) {
+              // Record already present: update metadata without double-deducting stock
               db.dispenseRecords[existingIdx] = { ...db.dispenseRecords[existingIdx], ...rec };
             } else {
+              // Deduct stock centrally according to standard rules
+              if (Array.isArray(rec.itemsDeducted)) {
+                rec.itemsDeducted.forEach((it: any) => {
+                  const stock = db.stocks[it.stockCategory];
+                  if (stock) {
+                    stock.currentStock = Math.max(0, stock.currentStock - Number(it.quantity || 0));
+                    stock.totalDispensed = (stock.totalDispensed || 0) + Number(it.quantity || 0);
+                    stock.lastUpdated = now;
+                  }
+                });
+              }
               db.dispenseRecords.unshift(rec);
             }
 
-            processedTransactionIds.add(txId);
+            processedOperationKeys.add(opKey);
+            if (item.syncId) processedOperationKeys.add(item.syncId);
             dbModified = true;
             results.push({
               syncId: item.syncId,
               transactionId: txId,
+              operationKey: opKey,
               status: 'processed',
               message: 'تم تسجيل حركة الصرف واعتماد الخصم',
             });
@@ -524,6 +568,7 @@ async function startServer() {
               results.push({
                 syncId: item.syncId,
                 transactionId: txId,
+                operationKey: opKey,
                 status: 'ignored_tombstoned',
                 message: 'تم تجاهل التعديل لأن حركة الصرف محذوفة مسبقاً (Tombstone)',
               });
@@ -581,10 +626,12 @@ async function startServer() {
               };
 
               dbModified = true;
-              processedTransactionIds.add(txId);
+              processedOperationKeys.add(opKey);
+              if (item.syncId) processedOperationKeys.add(item.syncId);
               results.push({
                 syncId: item.syncId,
                 transactionId: txId,
+                operationKey: opKey,
                 status: 'processed',
                 message: 'تم تحديث حركة الصرف وتعديل الأرصدة بدقة',
               });
@@ -611,10 +658,12 @@ async function startServer() {
               }
               db.dispenseRecords.unshift(rec);
               dbModified = true;
-              processedTransactionIds.add(txId);
+              processedOperationKeys.add(opKey);
+              if (item.syncId) processedOperationKeys.add(item.syncId);
               results.push({
                 syncId: item.syncId,
                 transactionId: txId,
+                operationKey: opKey,
                 status: 'processed',
                 message: 'تم اعتماد حركة الصرف المحدثة وإضافتها للخادم',
               });
@@ -632,9 +681,11 @@ async function startServer() {
 
           if (alreadyTombstoned) {
             // Already deleted! Do NOT restore stock again
+            processedOperationKeys.add(opKey);
             results.push({
               syncId: item.syncId,
               transactionId: txId,
+              operationKey: opKey,
               status: 'already_processed',
               message: 'حركة الصرف محذوفة مسبقاً (Tombstone Idempotent OK)',
             });
@@ -661,12 +712,23 @@ async function startServer() {
             }
             // Remove record from dispenseRecords
             db.dispenseRecords.splice(existingIdx, 1);
+          } else if (item.payload?.itemsRestored && Array.isArray(item.payload.itemsRestored)) {
+            item.payload.itemsRestored.forEach((it: any) => {
+              const stock = db.stocks[it.stockCategory];
+              if (stock) {
+                stock.currentStock = (stock.currentStock || 0) + Number(it.quantity || 0);
+                stock.totalDispensed = Math.max(0, (stock.totalDispensed || 0) - Number(it.quantity || 0));
+                stock.lastUpdated = now;
+              }
+            });
           }
 
           // 3. Register Tombstone in server database
           db.syncTombstones.push({
+            id: `tomb-${item.syncId || Date.now()}`,
             recordId: targetId,
             transactionId: targetTxId,
+            operationKey: opKey,
             operationType: 'DELETE_DISPENSE',
             deletedAt: item.payload?.deletedAt || now,
             deviceId: item.payload?.deviceId || item.deviceId || deviceId,
@@ -674,80 +736,273 @@ async function startServer() {
             details: item.payload?.details,
           });
 
-          processedTransactionIds.add(txId);
+          processedOperationKeys.add(opKey);
+          if (item.syncId) processedOperationKeys.add(item.syncId);
           dbModified = true;
           results.push({
             syncId: item.syncId,
             transactionId: txId,
+            operationKey: opKey,
             status: 'processed',
             message: 'تم حذف حركة الصرف واعتماد إعادة الكميات للمخزون وتسجيل Tombstone',
           });
         } else if (item.operationType === 'SUPPLY') {
           const supply = item.payload;
           if (supply) {
+            // Check if already tombstoned
+            if (
+              db.syncTombstones &&
+              db.syncTombstones.some(
+                (t: any) => t.recordId === supply.id || (supply.transactionId && t.transactionId === supply.transactionId)
+              )
+            ) {
+              results.push({
+                syncId: item.syncId,
+                transactionId: txId,
+                operationKey: opKey,
+                status: 'ignored_tombstoned',
+                message: 'تم تجاهل التوريد لأنه محذوف مسبقاً (Tombstone)',
+              });
+              continue;
+            }
+
             supply.transactionId = txId;
             supply.deviceId = supply.deviceId || deviceId || item.deviceId;
             supply.syncStatus = 'synced';
             supply.syncedAt = now;
 
-            const stock = db.stocks[supply.stockCategory];
-            if (stock) {
-              stock.currentStock = (stock.currentStock || 0) + Number(supply.quantity || 0);
-              stock.totalReceived = (stock.totalReceived || 0) + Number(supply.quantity || 0);
-              stock.lastUpdated = now;
-            }
-
             const existingIdx = db.supplyTransactions.findIndex(
               (s: any) => s.id === supply.id || (s.transactionId && s.transactionId === txId)
             );
+
             if (existingIdx !== -1) {
+              // Already exists on server: do not add quantity again
               db.supplyTransactions[existingIdx] = { ...db.supplyTransactions[existingIdx], ...supply };
             } else {
+              const stock = db.stocks[supply.stockCategory];
+              if (stock) {
+                stock.currentStock = (stock.currentStock || 0) + Number(supply.quantity || 0);
+                stock.totalReceived = (stock.totalReceived || 0) + Number(supply.quantity || 0);
+                stock.lastUpdated = now;
+              }
               db.supplyTransactions.unshift(supply);
             }
 
-            processedTransactionIds.add(txId);
+            processedOperationKeys.add(opKey);
+            if (item.syncId) processedOperationKeys.add(item.syncId);
             dbModified = true;
             results.push({
               syncId: item.syncId,
               transactionId: txId,
+              operationKey: opKey,
               status: 'processed',
               message: 'تم تسجيل حركة التوريد واعتماد الإضافة',
             });
           }
+        } else if (item.operationType === 'UPDATE_SUPPLY') {
+          const updates = item.payload;
+          if (updates) {
+            const targetId = updates.id || item.recordId;
+            const targetTxId = updates.transactionId || txId;
+
+            // Check if tombstoned
+            if (
+              db.syncTombstones &&
+              db.syncTombstones.some(
+                (t: any) => t.recordId === targetId || (targetTxId && t.transactionId === targetTxId)
+              )
+            ) {
+              results.push({
+                syncId: item.syncId,
+                transactionId: txId,
+                operationKey: opKey,
+                status: 'ignored_tombstoned',
+                message: 'تم تجاهل تعديل التوريد لأنه محذوف مسبقاً (Tombstone)',
+              });
+              continue;
+            }
+
+            const existingIdx = db.supplyTransactions.findIndex(
+              (s: any) => s.id === targetId || (targetTxId && s.transactionId === targetTxId)
+            );
+
+            if (existingIdx !== -1) {
+              const existing = db.supplyTransactions[existingIdx];
+              const oldQty = Number(existing.quantity || 0);
+              const newQty = Number(updates.quantity !== undefined ? updates.quantity : oldQty);
+              const qtyDiff = newQty - oldQty;
+
+              const targetCat = updates.stockCategory || existing.stockCategory;
+              if (targetCat && db.stocks[targetCat] && qtyDiff !== 0) {
+                db.stocks[targetCat].currentStock += qtyDiff;
+                db.stocks[targetCat].totalReceived = (db.stocks[targetCat].totalReceived || 0) + qtyDiff;
+                db.stocks[targetCat].lastUpdated = now;
+              }
+
+              db.supplyTransactions[existingIdx] = {
+                ...existing,
+                ...updates,
+                updatedAt: now,
+                syncStatus: 'synced',
+                syncedAt: now,
+              };
+
+              dbModified = true;
+              processedOperationKeys.add(opKey);
+              if (item.syncId) processedOperationKeys.add(item.syncId);
+              results.push({
+                syncId: item.syncId,
+                transactionId: txId,
+                operationKey: opKey,
+                status: 'processed',
+                message: 'تم تحديث حركة التوريد وتعديل رصيد المخزن بدقة',
+              });
+            } else {
+              // Not on server yet: insert
+              const supply = {
+                ...updates,
+                id: targetId,
+                transactionId: targetTxId,
+                deviceId: updates.deviceId || deviceId || item.deviceId,
+                syncStatus: 'synced',
+                syncedAt: now,
+              };
+              const stock = db.stocks[supply.stockCategory];
+              if (stock) {
+                stock.currentStock = (stock.currentStock || 0) + Number(supply.quantity || 0);
+                stock.totalReceived = (stock.totalReceived || 0) + Number(supply.quantity || 0);
+                stock.lastUpdated = now;
+              }
+              db.supplyTransactions.unshift(supply);
+              dbModified = true;
+              processedOperationKeys.add(opKey);
+              if (item.syncId) processedOperationKeys.add(item.syncId);
+              results.push({
+                syncId: item.syncId,
+                transactionId: txId,
+                operationKey: opKey,
+                status: 'processed',
+                message: 'تمت إضافة حركة التوريد المعدلة للخادم',
+              });
+            }
+          }
+        } else if (item.operationType === 'DELETE_SUPPLY') {
+          if (!db.syncTombstones) db.syncTombstones = [];
+          const targetId = item.recordId || item.payload?.recordId;
+          const targetTxId = item.payload?.transactionId || txId;
+
+          // Check if already tombstoned
+          const alreadyTombstoned = db.syncTombstones.some(
+            (t: any) => t.recordId === targetId || (targetTxId && t.transactionId === targetTxId)
+          );
+
+          if (alreadyTombstoned) {
+            processedOperationKeys.add(opKey);
+            results.push({
+              syncId: item.syncId,
+              transactionId: txId,
+              operationKey: opKey,
+              status: 'already_processed',
+              message: 'حركة التوريد محذوفة مسبقاً (Tombstone Idempotent OK)',
+            });
+            continue;
+          }
+
+          const existingIdx = db.supplyTransactions.findIndex(
+            (s: any) => s.id === targetId || (targetTxId && s.transactionId === targetTxId)
+          );
+
+          let qtyDeducted = 0;
+          let catDeducted = '';
+          if (existingIdx !== -1) {
+            const existing = db.supplyTransactions[existingIdx];
+            qtyDeducted = Number(existing.quantity || 0);
+            catDeducted = existing.stockCategory;
+            db.supplyTransactions.splice(existingIdx, 1);
+          } else if (item.payload) {
+            qtyDeducted = Number(item.payload.quantityDeducted || item.payload.quantity || 0);
+            catDeducted = item.payload.stockCategory || '';
+          }
+
+          if (catDeducted && db.stocks[catDeducted]) {
+            db.stocks[catDeducted].currentStock = Math.max(0, (db.stocks[catDeducted].currentStock || 0) - qtyDeducted);
+            db.stocks[catDeducted].totalReceived = Math.max(0, (db.stocks[catDeducted].totalReceived || 0) - qtyDeducted);
+            db.stocks[catDeducted].lastUpdated = now;
+          }
+
+          db.syncTombstones.push({
+            id: `tomb-${item.syncId || Date.now()}`,
+            recordId: targetId,
+            transactionId: targetTxId,
+            operationKey: opKey,
+            operationType: 'DELETE_SUPPLY',
+            deletedAt: item.payload?.deletedAt || now,
+            deviceId: item.payload?.deviceId || item.deviceId || deviceId,
+            deletedBy: item.payload?.deletedBy || item.userId || 'كاتب صحة سفلاق',
+            details: item.payload?.details,
+          });
+
+          processedOperationKeys.add(opKey);
+          if (item.syncId) processedOperationKeys.add(item.syncId);
+          dbModified = true;
+          results.push({
+            syncId: item.syncId,
+            transactionId: txId,
+            operationKey: opKey,
+            status: 'processed',
+            message: 'تم حذف حركة التوريد وخصم الكمية من المخزن وتسجيل Tombstone',
+          });
         } else if (item.operationType === 'LATE_REG_ADD') {
           const late = item.payload?.record || item.payload;
           const deductStock = item.payload?.deductStock;
           if (late) {
+            if (
+              db.syncTombstones &&
+              db.syncTombstones.some(
+                (t: any) => t.recordId === late.id || (late.transactionId && t.transactionId === late.transactionId)
+              )
+            ) {
+              results.push({
+                syncId: item.syncId,
+                transactionId: txId,
+                operationKey: opKey,
+                status: 'ignored_tombstoned',
+                message: 'تم تجاهل استمارة ساقط القيد لأنها محذوفة مسبقاً (Tombstone)',
+              });
+              continue;
+            }
+
             late.transactionId = txId;
             late.deviceId = late.deviceId || deviceId || item.deviceId;
             late.syncStatus = 'synced';
             late.syncedAt = now;
 
-            if (deductStock && late.ageCategory) {
-              const stockCat =
-                late.ageCategory === 'under_one_year' ? 'late_reg_under_year' : 'late_reg_over_year';
-              if (db.stocks[stockCat]) {
-                db.stocks[stockCat].currentStock = Math.max(0, db.stocks[stockCat].currentStock - 1);
-                db.stocks[stockCat].totalDispensed = (db.stocks[stockCat].totalDispensed || 0) + 1;
-                db.stocks[stockCat].lastUpdated = now;
-              }
-            }
-
             const existingIdx = db.lateRegistrations.findIndex(
               (l: any) => l.id === late.id || (l.transactionId && l.transactionId === txId)
             );
+
             if (existingIdx !== -1) {
               db.lateRegistrations[existingIdx] = { ...db.lateRegistrations[existingIdx], ...late };
             } else {
+              if (deductStock && late.ageCategory) {
+                const stockCat =
+                  late.ageCategory === 'under_one_year' ? 'late_reg_under_year' : 'late_reg_over_year';
+                if (db.stocks[stockCat]) {
+                  db.stocks[stockCat].currentStock = Math.max(0, db.stocks[stockCat].currentStock - 1);
+                  db.stocks[stockCat].totalDispensed = (db.stocks[stockCat].totalDispensed || 0) + 1;
+                  db.stocks[stockCat].lastUpdated = now;
+                }
+              }
               db.lateRegistrations.unshift(late);
             }
 
-            processedTransactionIds.add(txId);
+            processedOperationKeys.add(opKey);
+            if (item.syncId) processedOperationKeys.add(item.syncId);
             dbModified = true;
             results.push({
               syncId: item.syncId,
               transactionId: txId,
+              operationKey: opKey,
               status: 'processed',
               message: 'تم تسجيل استمارة ساقط القيد بنجاح',
             });
@@ -772,15 +1027,78 @@ async function startServer() {
                 updatedAt: now,
               };
               dbModified = true;
-              processedTransactionIds.add(txId);
+              processedOperationKeys.add(opKey);
+              if (item.syncId) processedOperationKeys.add(item.syncId);
               results.push({
                 syncId: item.syncId,
                 transactionId: txId,
+                operationKey: opKey,
                 status: 'processed',
                 message: 'تم تحديث سجل ومسار استمارة ساقط القيد',
               });
             }
           }
+        } else if (item.operationType === 'DELETE_LATE_REG') {
+          if (!db.syncTombstones) db.syncTombstones = [];
+          const targetId = item.recordId || item.payload?.recordId;
+          const targetTxId = item.payload?.transactionId || txId;
+
+          const alreadyTombstoned = db.syncTombstones.some(
+            (t: any) => t.recordId === targetId || (targetTxId && t.transactionId === targetTxId)
+          );
+
+          if (alreadyTombstoned) {
+            processedOperationKeys.add(opKey);
+            results.push({
+              syncId: item.syncId,
+              transactionId: txId,
+              operationKey: opKey,
+              status: 'already_processed',
+              message: 'استمارة ساقط القيد محذوفة مسبقاً (Tombstone Idempotent OK)',
+            });
+            continue;
+          }
+
+          const existingIdx = db.lateRegistrations.findIndex(
+            (l: any) => l.id === targetId || (targetTxId && l.transactionId === targetTxId)
+          );
+
+          if (existingIdx !== -1) {
+            const record = db.lateRegistrations[existingIdx];
+            if (record.ageCategory) {
+              const stockCat =
+                record.ageCategory === 'under_one_year' ? 'late_reg_under_year' : 'late_reg_over_year';
+              if (db.stocks[stockCat]) {
+                db.stocks[stockCat].currentStock += 1;
+                db.stocks[stockCat].totalDispensed = Math.max(0, (db.stocks[stockCat].totalDispensed || 0) - 1);
+                db.stocks[stockCat].lastUpdated = now;
+              }
+            }
+            db.lateRegistrations.splice(existingIdx, 1);
+          }
+
+          db.syncTombstones.push({
+            id: `tomb-${item.syncId || Date.now()}`,
+            recordId: targetId,
+            transactionId: targetTxId,
+            operationKey: opKey,
+            operationType: 'DELETE_LATE_REG',
+            deletedAt: item.payload?.deletedAt || now,
+            deviceId: item.payload?.deviceId || item.deviceId || deviceId,
+            deletedBy: item.payload?.deletedBy || item.userId || 'كاتب صحة سفلاق',
+            details: item.payload?.details,
+          });
+
+          processedOperationKeys.add(opKey);
+          if (item.syncId) processedOperationKeys.add(item.syncId);
+          dbModified = true;
+          results.push({
+            syncId: item.syncId,
+            transactionId: txId,
+            operationKey: opKey,
+            status: 'processed',
+            message: 'تم حذف استمارة ساقط القيد وإعادة الاستمارة للمخزون وتسجيل Tombstone',
+          });
         }
       }
 
@@ -965,19 +1283,29 @@ async function startServer() {
       cleanDb.version = ((cleanDb.version || 1) + 1);
       saveDatabaseToDisk(cleanDb);
 
-      // Step 4: Re-index processed transactions
-      processedTransactionIds.clear();
+      // Step 4: Re-index processed operations
+      processedOperationKeys.clear();
       (cleanDb.dispenseRecords || []).forEach((r: any) => {
         const txId = r.transactionId || `tx-${r.id}`;
-        processedTransactionIds.add(txId);
+        processedOperationKeys.add(`DISPENSE:${r.id}`);
+        processedOperationKeys.add(`DISPENSE:${txId}`);
+        processedOperationKeys.add(txId);
       });
       (cleanDb.supplyTransactions || []).forEach((s: any) => {
         const txId = s.transactionId || `tx-${s.id}`;
-        processedTransactionIds.add(txId);
+        processedOperationKeys.add(`SUPPLY:${s.id}`);
+        processedOperationKeys.add(`SUPPLY:${txId}`);
+        processedOperationKeys.add(txId);
       });
       (cleanDb.lateRegistrations || []).forEach((l: any) => {
         const txId = l.transactionId || `tx-${l.id}`;
-        processedTransactionIds.add(txId);
+        processedOperationKeys.add(`LATE_REG_ADD:${l.id}`);
+        processedOperationKeys.add(`LATE_REG_ADD:${txId}`);
+        processedOperationKeys.add(txId);
+      });
+      (cleanDb.syncTombstones || []).forEach((t: any) => {
+        if (t.operationKey) processedOperationKeys.add(t.operationKey);
+        if (t.recordId) processedOperationKeys.add(`${t.operationType}:${t.recordId}`);
       });
       saveProcessedTransactions();
 
@@ -1077,8 +1405,8 @@ async function startServer() {
         },
       };
 
-      // Step 3: Clear processedTransactionIds so pre-reset transactions cannot linger
-      processedTransactionIds.clear();
+      // Step 3: Clear processedOperationKeys so pre-reset transactions cannot linger
+      processedOperationKeys.clear();
       saveProcessedTransactions();
 
       // Step 4: Atomically save clean database to disk

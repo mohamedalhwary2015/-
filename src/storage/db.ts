@@ -16,6 +16,12 @@ import {
 
 export { STOCK_CATEGORIES_INFO };
 import { 
+  validateDispenseAvailability, 
+  recalculateAllStocks, 
+  runFullIntegrityCheck 
+} from '../services/stockService';
+export { validateDispenseAvailability, recalculateAllStocks, runFullIntegrityCheck };
+import { 
   executeAutoSync, 
   markHasPendingChanges,
   enqueueSyncItem,
@@ -49,8 +55,8 @@ export const INITIAL_DATABASE: AppDatabase = {
       name: 'شهادات الميلاد الورقية الرسمية',
       category: 'birth',
       currentStock: 145,
-      totalReceived: 300,
-      totalDispensed: 152,
+      totalReceived: 150,
+      totalDispensed: 2,
       damagedOrCancelled: 3,
       minThreshold: 30,
       unit: 'شهادة / استمارة',
@@ -60,9 +66,9 @@ export const INITIAL_DATABASE: AppDatabase = {
       id: 'birth_notifications',
       name: 'بلاغات الميلاد (إخطار تبليغ)',
       category: 'birth',
-      currentStock: 160,
-      totalReceived: 300,
-      totalDispensed: 140,
+      currentStock: 0,
+      totalReceived: 0,
+      totalDispensed: 2,
       damagedOrCancelled: 0,
       minThreshold: 30,
       unit: 'أصل بلاغ',
@@ -72,9 +78,9 @@ export const INITIAL_DATABASE: AppDatabase = {
       id: 'death_certificates',
       name: 'شهادات الوفاة الورقية الرسمية',
       category: 'death',
-      currentStock: 85,
-      totalReceived: 150,
-      totalDispensed: 64,
+      currentStock: 0,
+      totalReceived: 0,
+      totalDispensed: 2,
       damagedOrCancelled: 1,
       minThreshold: 20,
       unit: 'شهادة / استمارة',
@@ -84,9 +90,9 @@ export const INITIAL_DATABASE: AppDatabase = {
       id: 'death_notifications',
       name: 'بلاغات الوفاة (إخطار تبليغ)',
       category: 'death',
-      currentStock: 90,
-      totalReceived: 150,
-      totalDispensed: 60,
+      currentStock: 0,
+      totalReceived: 0,
+      totalDispensed: 2,
       damagedOrCancelled: 0,
       minThreshold: 20,
       unit: 'أصل بلاغ',
@@ -96,9 +102,9 @@ export const INITIAL_DATABASE: AppDatabase = {
       id: 'health_cards_male',
       name: 'بطاقات صحية ذكور (تطعيمات ورعاية)',
       category: 'health_card',
-      currentStock: 112,
-      totalReceived: 200,
-      totalDispensed: 88,
+      currentStock: 99,
+      totalReceived: 100,
+      totalDispensed: 1,
       damagedOrCancelled: 0,
       minThreshold: 25,
       unit: 'بطاقة',
@@ -108,9 +114,9 @@ export const INITIAL_DATABASE: AppDatabase = {
       id: 'health_cards_female',
       name: 'بطاقات صحية إناث (تطعيمات ورعاية)',
       category: 'health_card',
-      currentStock: 98,
-      totalReceived: 200,
-      totalDispensed: 102,
+      currentStock: 99,
+      totalReceived: 100,
+      totalDispensed: 1,
       damagedOrCancelled: 0,
       minThreshold: 25,
       unit: 'بطاقة',
@@ -120,9 +126,9 @@ export const INITIAL_DATABASE: AppDatabase = {
       id: 'late_reg_under_year',
       name: 'استمارات ساقط قيد (أقل من عام)',
       category: 'late_registration',
-      currentStock: 75,
-      totalReceived: 100,
-      totalDispensed: 25,
+      currentStock: 0,
+      totalReceived: 0,
+      totalDispensed: 0,
       damagedOrCancelled: 0,
       minThreshold: 15,
       unit: 'استمارة / نموذج',
@@ -132,12 +138,12 @@ export const INITIAL_DATABASE: AppDatabase = {
       id: 'late_reg_over_year',
       name: 'استمارات ساقط قيد (أكبر من عام)',
       category: 'late_registration',
-      openingStock: 40,
+      openingStock: 0,
       openingSerialFrom: '001401',
       openingSerialTo: '001440',
-      currentStock: 60,
-      totalReceived: 80,
-      totalDispensed: 20,
+      currentStock: 0,
+      totalReceived: 0,
+      totalDispensed: 0,
       damagedOrCancelled: 0,
       minThreshold: 15,
       unit: 'استمارة / نموذج',
@@ -527,6 +533,20 @@ export function saveDatabase(db: AppDatabase): void {
   }
 }
 
+export function backupBeforeMigration(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const backupKey = `saflaq_backup_before_migration_${Date.now()}`;
+      localStorage.setItem(backupKey, raw);
+      localStorage.setItem('saflaq_latest_pre_migration_backup', raw);
+    }
+  } catch (err) {
+    console.warn('Backup before migration failed:', err);
+  }
+}
+
 export function addSupplyTransaction(
   data: Omit<SupplyTransaction, 'id' | 'createdAt'>
 ): { db: AppDatabase; supply: SupplyTransaction } {
@@ -535,10 +555,11 @@ export function addSupplyTransaction(
   const txId = (data as any).transactionId || generateGlobalTxId();
   const devId = (data as any).deviceId || getOrCreateDeviceId();
   const isOffline = typeof navigator !== 'undefined' ? !navigator.onLine : false;
+  const supplyId = 'sup-' + (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`);
 
   const supply: SupplyTransaction = {
     ...data,
-    id: 'sup-' + Date.now(),
+    id: supplyId,
     createdAt: now,
     transactionId: txId,
     deviceId: devId,
@@ -551,13 +572,16 @@ export function addSupplyTransaction(
   // Update stocks
   const stock = db.stocks[data.stockCategory];
   if (stock) {
-    stock.currentStock += data.quantity;
-    stock.totalReceived += data.quantity;
+    stock.currentStock += Number(data.quantity) || 0;
+    stock.totalReceived = (stock.totalReceived || 0) + (Number(data.quantity) || 0);
     stock.lastUpdated = now;
   }
 
   // Enqueue for central idempotent synchronization
+  const syncId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sync-${Date.now()}`;
   enqueueSyncItem({
+    syncId,
+    operationKey: `SUPPLY:${supply.id}:${syncId}`,
     transactionId: txId,
     deviceId: devId,
     userId: supply.receivedBy || 'أحمد محمود',
@@ -573,7 +597,8 @@ export function addSupplyTransaction(
 
 export function updateSupplyTransaction(
   id: string,
-  updates: Partial<SupplyTransaction>
+  updates: Partial<SupplyTransaction>,
+  employeeName?: string
 ): AppDatabase {
   const db = getDatabase();
   const txIndex = db.supplyTransactions.findIndex((t) => t.id === id);
@@ -581,50 +606,153 @@ export function updateSupplyTransaction(
 
   const oldTx = db.supplyTransactions[txIndex];
   const targetCategory = updates.stockCategory || oldTx.stockCategory;
-  const targetQuantity = updates.quantity !== undefined ? Number(updates.quantity) : oldTx.quantity;
+  const targetQuantity = updates.quantity !== undefined ? Number(updates.quantity) : Number(oldTx.quantity);
+  const now = new Date().toISOString();
 
-  // If category or quantity changed, update inventory stocks accordingly
-  if (targetCategory !== oldTx.stockCategory || targetQuantity !== oldTx.quantity) {
-    // Revert old transaction amounts
+  // If category changed or quantity changed
+  if (targetCategory !== oldTx.stockCategory) {
+    // Revert old category stock
     const oldStock = db.stocks[oldTx.stockCategory];
     if (oldStock) {
-      oldStock.currentStock = Math.max(0, oldStock.currentStock - oldTx.quantity);
-      oldStock.totalReceived = Math.max(0, oldStock.totalReceived - oldTx.quantity);
-      oldStock.lastUpdated = new Date().toISOString();
+      if (oldStock.currentStock < oldTx.quantity) {
+        throw new Error(`لا يمكن تغيير الصنف لأن الكمية المتبقية من (${oldStock.name}) غير كافية لخصم التوريد القديم`);
+      }
+      oldStock.currentStock -= oldTx.quantity;
+      oldStock.totalReceived = Math.max(0, (oldStock.totalReceived || 0) - oldTx.quantity);
+      oldStock.lastUpdated = now;
     }
-    // Apply new transaction amounts
+    // Add to new category stock
     const newStock = db.stocks[targetCategory];
     if (newStock) {
       newStock.currentStock += targetQuantity;
-      newStock.totalReceived += targetQuantity;
-      newStock.lastUpdated = new Date().toISOString();
+      newStock.totalReceived = (newStock.totalReceived || 0) + targetQuantity;
+      newStock.lastUpdated = now;
+    }
+  } else if (targetQuantity !== oldTx.quantity) {
+    // Same category, delta difference
+    const delta = targetQuantity - oldTx.quantity;
+    const stock = db.stocks[targetCategory];
+    if (stock) {
+      if (delta < 0 && stock.currentStock < Math.abs(delta)) {
+        throw new Error(`لا يمكن تقليل كمية التوريد بمقدار ${Math.abs(delta)} لأن الرصيد الحالي (${stock.currentStock}) أقل من الكمية المراد تخفيضها (تم صرف جزء منها بالفعل)`);
+      }
+      stock.currentStock += delta;
+      stock.totalReceived = (stock.totalReceived || 0) + delta;
+      stock.lastUpdated = now;
     }
   }
 
-  db.supplyTransactions[txIndex] = {
+  const updatedSupply: SupplyTransaction = {
     ...oldTx,
     ...updates,
+    id: oldTx.id,
     quantity: targetQuantity,
+    stockCategory: targetCategory,
+    transactionId: oldTx.transactionId || `tx-${oldTx.id}`,
+    syncStatus: 'pending',
   };
+
+  db.supplyTransactions[txIndex] = updatedSupply;
+
+  // Enqueue UPDATE_SUPPLY for server sync
+  const syncId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sync-${Date.now()}`;
+  enqueueSyncItem({
+    syncId,
+    operationKey: `UPDATE_SUPPLY:${updatedSupply.id}:${syncId}`,
+    transactionId: updatedSupply.transactionId || `tx-${updatedSupply.id}`,
+    deviceId: updatedSupply.deviceId || getOrCreateDeviceId(),
+    userId: employeeName || updatedSupply.receivedBy || 'أحمد محمود',
+    operationType: 'UPDATE_SUPPLY',
+    tableName: 'supplyTransactions',
+    recordId: updatedSupply.id,
+    payload: {
+      oldCategory: oldTx.stockCategory,
+      oldQuantity: oldTx.quantity,
+      newCategory: targetCategory,
+      newQuantity: targetQuantity,
+      supply: updatedSupply,
+    },
+  }).catch((err) => console.warn('Enqueue update supply notice:', err));
 
   saveDatabase(db);
   return db;
 }
 
-export function deleteSupplyTransaction(id: string): AppDatabase {
+export function deleteSupplyTransaction(id: string, deletedBy?: string): AppDatabase {
   const db = getDatabase();
   const txIndex = db.supplyTransactions.findIndex((t) => t.id === id);
+
+  if (!db.syncTombstones) {
+    db.syncTombstones = [];
+  }
+
+  // Idempotency check
+  const isAlreadyTombstoned = db.syncTombstones.some(
+    (t) => t.recordId === id && t.operationType === 'DELETE_SUPPLY'
+  );
+  if (isAlreadyTombstoned) {
+    db.supplyTransactions = db.supplyTransactions.filter((t) => t.id !== id);
+    saveDatabase(db);
+    return db;
+  }
+
   if (txIndex === -1) return db;
 
   const tx = db.supplyTransactions[txIndex];
+  const now = new Date().toISOString();
   const stock = db.stocks[tx.stockCategory];
+
+  // Check if stock has enough units to cancel the supply
   if (stock) {
-    stock.currentStock = Math.max(0, stock.currentStock - tx.quantity);
-    stock.totalReceived = Math.max(0, stock.totalReceived - tx.quantity);
-    stock.lastUpdated = new Date().toISOString();
+    if (stock.currentStock < tx.quantity) {
+      throw new Error(`لا يمكن حذف حركة التوريد رقم (${tx.documentNumber || tx.id}) لأن الرصيد الحالي (${stock.currentStock}) أقل من كمية التوريد (${tx.quantity}) حيث تم صرف أجزاء منها بالفعل`);
+    }
+    stock.currentStock -= tx.quantity;
+    stock.totalReceived = Math.max(0, (stock.totalReceived || 0) - tx.quantity);
+    stock.lastUpdated = now;
   }
 
+  // Create Tombstone
+  const syncId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sync-${Date.now()}`;
+  const tombstone: SyncTombstone = {
+    id: `tomb-${typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now()}`,
+    recordId: tx.id,
+    transactionId: tx.transactionId || `tx-${tx.id}`,
+    operationKey: `DELETE_SUPPLY:${tx.id}:${syncId}`,
+    operationType: 'DELETE_SUPPLY',
+    deletedAt: now,
+    deviceId: tx.deviceId || getOrCreateDeviceId(),
+    deletedBy: deletedBy || 'أحمد محمود',
+    details: {
+      documentNumber: tx.documentNumber,
+      stockCategory: tx.stockCategory,
+      quantity: tx.quantity,
+    },
+  };
+  db.syncTombstones.push(tombstone);
+
   db.supplyTransactions.splice(txIndex, 1);
+
+  // Enqueue DELETE_SUPPLY
+  enqueueSyncItem({
+    syncId,
+    operationKey: `DELETE_SUPPLY:${tx.id}:${syncId}`,
+    transactionId: tx.transactionId || `tx-${tx.id}`,
+    deviceId: tx.deviceId || getOrCreateDeviceId(),
+    userId: tombstone.deletedBy || 'أحمد محمود',
+    operationType: 'DELETE_SUPPLY',
+    tableName: 'supplyTransactions',
+    recordId: tx.id,
+    payload: {
+      recordId: tx.id,
+      stockCategory: tx.stockCategory,
+      quantity: tx.quantity,
+      transactionId: tx.transactionId,
+      deletedAt: now,
+      deletedBy: tombstone.deletedBy,
+    },
+  }).catch((err) => console.warn('Enqueue delete supply notice:', err));
+
   saveDatabase(db);
   return db;
 }
@@ -633,14 +761,22 @@ export function addDispenseRecord(
   data: Omit<DispenseRecord, 'id' | 'createdAt'>
 ): { db: AppDatabase; record: DispenseRecord } {
   const db = getDatabase();
+
+  // 1. Strict Stock Availability Check (No negative stock, no Math.max concealing)
+  const validation = validateDispenseAvailability(db.stocks, data.itemsDeducted);
+  if (!validation.isValid) {
+    throw new Error(validation.errorMessage || 'الرصيد غير كافٍ لإتمام عملية الصرف');
+  }
+
   const now = new Date().toISOString();
   const txId = (data as any).transactionId || generateGlobalTxId();
   const devId = (data as any).deviceId || getOrCreateDeviceId();
   const isOffline = typeof navigator !== 'undefined' ? !navigator.onLine : false;
+  const recordId = 'disp-' + (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`);
 
   const record: DispenseRecord = {
     ...data,
-    id: 'disp-' + Date.now(),
+    id: recordId,
     createdAt: now,
     transactionId: txId,
     deviceId: devId,
@@ -650,18 +786,21 @@ export function addDispenseRecord(
 
   db.dispenseRecords.unshift(record);
 
-  // Deduct stocks locally (Optimistic Local Execution)
+  // Deduct stocks strictly
   data.itemsDeducted.forEach((item) => {
     const stock = db.stocks[item.stockCategory];
     if (stock) {
-      stock.currentStock = Math.max(0, stock.currentStock - item.quantity);
-      stock.totalDispensed += item.quantity;
+      stock.currentStock -= item.quantity;
+      stock.totalDispensed = (stock.totalDispensed || 0) + item.quantity;
       stock.lastUpdated = now;
     }
   });
 
-  // Enqueue for central idempotent synchronization
+  // Enqueue for central idempotent synchronization with unique operationKey
+  const syncId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sync-${Date.now()}`;
   enqueueSyncItem({
+    syncId,
+    operationKey: `DISPENSE:${record.id}:${syncId}`,
     transactionId: txId,
     deviceId: devId,
     userId: record.dispensedBy || 'أحمد محمود',
@@ -706,21 +845,30 @@ export function updateDispenseRecord(
       ...Object.keys(newTotals),
     ]) as Set<StockCategory>;
 
+    // Pre-check availability for any category that requires INCREASING quantity
+    for (const cat of allCategories) {
+      const oldQty = oldTotals[cat] || 0;
+      const newQty = newTotals[cat] || 0;
+      const diff = newQty - oldQty;
+      if (diff > 0) {
+        const stock = db.stocks[cat];
+        const available = stock ? Number(stock.currentStock) || 0 : 0;
+        if (diff > available) {
+          throw new Error(`الرصيد غير كافٍ لزيادة المنصرف للصنف (${stock?.name || cat}): المتاح ${available}، والمطلوب إضافته ${diff}`);
+        }
+      }
+    }
+
+    // Apply Deltas
     allCategories.forEach((cat) => {
       const oldQty = oldTotals[cat] || 0;
       const newQty = newTotals[cat] || 0;
-      const diff = newQty - oldQty; // e.g. 3 - 2 = +1 more dispensed
+      const diff = newQty - oldQty;
       if (diff !== 0) {
         const stock = db.stocks[cat];
         if (stock) {
-          if (diff > 0) {
-            stock.currentStock = Math.max(0, stock.currentStock - diff);
-            stock.totalDispensed = (stock.totalDispensed || 0) + diff;
-          } else {
-            const restoreQty = Math.abs(diff);
-            stock.currentStock += restoreQty;
-            stock.totalDispensed = Math.max(0, (stock.totalDispensed || 0) - restoreQty);
-          }
+          stock.currentStock -= diff;
+          stock.totalDispensed = (stock.totalDispensed || 0) + diff;
           stock.lastUpdated = now;
         }
       }
@@ -738,8 +886,11 @@ export function updateDispenseRecord(
 
   db.dispenseRecords[recordIndex] = updatedRecord;
 
-  // Enqueue for central idempotent synchronization
+  // Enqueue for central idempotent synchronization with unique operationKey
+  const syncId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sync-${Date.now()}`;
   enqueueSyncItem({
+    syncId,
+    operationKey: `UPDATE_DISPENSE:${updatedRecord.id}:${syncId}`,
     transactionId: updatedRecord.transactionId || updatedRecord.id,
     deviceId: updatedRecord.deviceId || getOrCreateDeviceId(),
     userId: employeeName || updatedRecord.dispensedBy || db.officeSettings?.currentEmployee || 'كاتب صحة سفلاق',
@@ -762,9 +913,9 @@ export function deleteDispenseRecord(id: string, deletedBy?: string): AppDatabas
     db.syncTombstones = [];
   }
 
-  // Idempotency check: verify if recordId or transactionId is already in tombstones
+  // Idempotency check: verify if recordId is already in tombstones
   const isAlreadyTombstoned = db.syncTombstones.some(
-    (t) => t.recordId === id || (record?.transactionId && t.transactionId === record.transactionId)
+    (t) => t.recordId === id && t.operationType === 'DELETE_DISPENSE'
   );
 
   if (isAlreadyTombstoned) {
@@ -781,6 +932,7 @@ export function deleteDispenseRecord(id: string, deletedBy?: string): AppDatabas
   const now = new Date().toISOString();
   const txId = record.transactionId || record.id;
   const devId = record.deviceId || getOrCreateDeviceId();
+  const syncId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sync-${Date.now()}`;
 
   // 1. Return deducted quantities to inventory stock once
   if (record.itemsDeducted && Array.isArray(record.itemsDeducted)) {
@@ -796,12 +948,15 @@ export function deleteDispenseRecord(id: string, deletedBy?: string): AppDatabas
 
   // 2. Register permanent Tombstone locally
   const tombstone: SyncTombstone = {
+    id: `tomb-${typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now()}`,
     recordId: record.id,
     transactionId: txId,
+    operationKey: `DELETE_DISPENSE:${record.id}:${syncId}`,
     operationType: 'DELETE_DISPENSE',
     deletedAt: now,
     deviceId: devId,
     deletedBy: deletedBy || 'كاتب صحة سفلاق',
+    itemsRestored: record.itemsDeducted,
     details: {
       beneficiaryName: record.beneficiaryName,
       itemsRestored: record.itemsDeducted,
@@ -812,8 +967,10 @@ export function deleteDispenseRecord(id: string, deletedBy?: string): AppDatabas
   // 3. Remove record from active dispense records array
   db.dispenseRecords = db.dispenseRecords.filter((r) => r.id !== id);
 
-  // 4. Enqueue Sync Item with DELETE_DISPENSE
+  // 4. Enqueue Sync Item with DELETE_DISPENSE and unique operationKey
   enqueueSyncItem({
+    syncId,
+    operationKey: `DELETE_DISPENSE:${record.id}:${syncId}`,
     transactionId: txId,
     deviceId: devId,
     userId: tombstone.deletedBy || 'كاتب صحة سفلاق',
@@ -826,6 +983,7 @@ export function deleteDispenseRecord(id: string, deletedBy?: string): AppDatabas
       deviceId: devId,
       deletedAt: now,
       deletedBy: tombstone.deletedBy,
+      itemsRestored: record.itemsDeducted,
     },
   }).catch((err) => console.warn('Enqueue delete dispense notice:', err));
 
@@ -999,9 +1157,76 @@ export function trackLateRegistrationStatus(
   return db;
 }
 
-export function deleteLateRegistration(id: string): AppDatabase {
+export function deleteLateRegistration(id: string, deletedBy?: string): AppDatabase {
   const db = getDatabase();
+  const record = db.lateRegistrations.find((r) => r.id === id);
+
+  if (!db.syncTombstones) {
+    db.syncTombstones = [];
+  }
+
+  const isAlreadyTombstoned = db.syncTombstones.some(
+    (t) => t.recordId === id && t.operationType === 'DELETE_LATE_REG'
+  );
+  if (isAlreadyTombstoned) {
+    db.lateRegistrations = db.lateRegistrations.filter((r) => r.id !== id);
+    saveDatabase(db);
+    return db;
+  }
+
+  if (!record) return db;
+
+  const now = new Date().toISOString();
+  const devId = record.deviceId || getOrCreateDeviceId();
+  const txId = record.transactionId || `tx-${record.id}`;
+  const syncId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sync-${Date.now()}`;
+
+  // If a stock was deducted for this late registration, restore it
+  if (record.ageCategory) {
+    const stockCat: StockCategory =
+      record.ageCategory === 'under_one_year' ? 'late_reg_under_year' : 'late_reg_over_year';
+    if (db.stocks[stockCat]) {
+      db.stocks[stockCat].currentStock += 1;
+      db.stocks[stockCat].totalDispensed = Math.max(0, (db.stocks[stockCat].totalDispensed || 0) - 1);
+      db.stocks[stockCat].lastUpdated = now;
+    }
+  }
+
+  const tombstone: SyncTombstone = {
+    id: `tomb-${typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now()}`,
+    recordId: record.id,
+    transactionId: txId,
+    operationKey: `DELETE_LATE_REG:${record.id}:${syncId}`,
+    operationType: 'DELETE_LATE_REG',
+    deletedAt: now,
+    deviceId: devId,
+    deletedBy: deletedBy || 'أحمد محمود',
+    details: {
+      personName: record.personName,
+      formNumber: record.formNumber,
+    },
+  };
+  db.syncTombstones.push(tombstone);
+
   db.lateRegistrations = db.lateRegistrations.filter((r) => r.id !== id);
+
+  enqueueSyncItem({
+    syncId,
+    operationKey: `DELETE_LATE_REG:${record.id}:${syncId}`,
+    transactionId: txId,
+    deviceId: devId,
+    userId: tombstone.deletedBy || 'أحمد محمود',
+    operationType: 'DELETE_LATE_REG',
+    tableName: 'lateRegistrations',
+    recordId: record.id,
+    payload: {
+      recordId: record.id,
+      transactionId: txId,
+      deletedAt: now,
+      deletedBy: tombstone.deletedBy,
+    },
+  }).catch((err) => console.warn('Enqueue delete late reg notice:', err));
+
   saveDatabase(db);
   return db;
 }

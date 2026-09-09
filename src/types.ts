@@ -247,7 +247,8 @@ export interface SyncTombstone {
   id?: string;
   recordId: string;
   transactionId?: string;
-  operationType: 'DELETE_DISPENSE' | 'DELETE_SUPPLY' | 'DELETE_LATE_REG';
+  operationKey?: string;
+  operationType: 'DELETE_DISPENSE' | 'DELETE_SUPPLY' | 'DELETE_LATE_REG' | string;
   deletedAt: string;
   deviceId?: string;
   deletedBy?: string;
@@ -278,6 +279,17 @@ export interface AppDatabase {
 
 export type SyncStatus = 'synced' | 'syncing' | 'pending' | 'offline' | 'error';
 
+export type SyncOperationType =
+  | 'DISPENSE'
+  | 'SUPPLY'
+  | 'LATE_REG_ADD'
+  | 'LATE_REG_UPDATE'
+  | 'UPDATE_DISPENSE'
+  | 'DELETE_DISPENSE'
+  | 'UPDATE_SUPPLY'
+  | 'DELETE_SUPPLY'
+  | 'DELETE_LATE_REG';
+
 export interface AutoSyncConfig {
   enabled: boolean;                      // تفعيل التخزين والتحديث التلقائي
   syncOnReconnect: boolean;              // مزامنة فورية عند عودة الاتصال بالإنترنت
@@ -295,16 +307,11 @@ export interface AutoSyncConfig {
 
 export interface SyncQueueItem {
   syncId: string;                        // UUID فريد لعنصر الطابور
+  operationKey?: string;                 // مفتاح العملية الفريد للحماية من التكرار (operationType:recordId:syncId)
   transactionId: string;                 // Global Unique Transaction ID
   deviceId: string;                      // معرف الجهاز المنفذ للحركة
   userId: string;                        // الموظف المنفذ
-  operationType:
-    | 'DISPENSE'
-    | 'SUPPLY'
-    | 'LATE_REG_ADD'
-    | 'LATE_REG_UPDATE'
-    | 'UPDATE_DISPENSE'
-    | 'DELETE_DISPENSE';
+  operationType: SyncOperationType;
   tableName: 'dispenseRecords' | 'supplyTransactions' | 'lateRegistrations';
   recordId: string;                      // معرف السجل المستهدف
   payload: any;                          // بيانات الحركة كاملة
@@ -313,6 +320,44 @@ export interface SyncQueueItem {
   retryCount: number;                    // عدد محاولات الإرسال
   lastError?: string;                    // نص آخر خطأ إن وجد
   syncedAt?: string;                     // توقيت الاعتماد المركزي
+}
+
+export interface IntegrityIssue {
+  id: string;
+  type: 'CRITICAL' | 'WARNING' | 'INFO';
+  category: 'NEGATIVE_BALANCE' | 'DUPLICATE_ID' | 'DISCREPANCY' | 'ORPHAN_TOMBSTONE' | 'ONLINE_ONLY' | 'OVERDRAFT_RECORD' | 'CORRUPTED_RECORD';
+  title: string;
+  description: string;
+  recordId?: string;
+  transactionId?: string;
+  stockCategory?: StockCategory;
+  details?: any;
+}
+
+export interface FullIntegrityReport {
+  timestamp: string;
+  isValid: boolean;
+  criticalIssuesCount: number;
+  warningsCount: number;
+  issues: IntegrityIssue[];
+  stockAudit: Record<StockCategory, {
+    recordedStock: number;
+    theoreticalStock: number;
+    difference: number;
+    openingBalance: number;
+    totalSupplied: number;
+    totalDispensed: number;
+    totalDamaged: number;
+    isBalanced: boolean;
+  }>;
+  onlineOnlyRecords: Array<{
+    type: 'SUPPLY' | 'DISPENSE' | 'LATE_REG';
+    id: string;
+    transactionId?: string;
+    date: string;
+    details: any;
+  }>;
+  summary: string;
 }
 
 export interface SyncLogEntry {

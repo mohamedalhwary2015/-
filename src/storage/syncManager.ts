@@ -154,9 +154,9 @@ function saveLocalQueueFallback(items: SyncQueueItem[]): void {
 }
 
 export async function enqueueSyncItem(
-  item: Omit<SyncQueueItem, 'syncId' | 'createdAt' | 'status' | 'retryCount'>
+  item: Omit<SyncQueueItem, 'syncId' | 'createdAt' | 'status' | 'retryCount'> & { syncId?: string }
 ): Promise<SyncQueueItem> {
-  const syncId = `sync-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+  const syncId = item.syncId || `sync-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
   const now = new Date().toISOString();
   const queueItem: SyncQueueItem = {
     ...item,
