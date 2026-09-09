@@ -125,7 +125,7 @@ function saveDatabaseToDisk(db: any): boolean {
  * Non-destructive additive merge (Production Data Protection)
  * Guarantees no existing transaction or balance is erased or lost.
  */
-function mergeDatabasesNonDestructive(serverDb: any, clientDb: any): any {
+export function mergeDatabasesNonDestructive(serverDb: any, clientDb: any): any {
   if (!clientDb || typeof clientDb !== 'object') return serverDb || {};
   if (!serverDb || typeof serverDb !== 'object') return clientDb;
 
@@ -1448,7 +1448,11 @@ async function startServer() {
   });
 }
 
-startServer().catch((err) => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
-});
+// Only start server if executed directly (not when imported in test scripts)
+const isMain = process.argv[1] && (process.argv[1].endsWith('server.ts') || process.argv[1].endsWith('server.cjs') || process.argv[1].includes('tsx'));
+if (isMain && !process.argv[1].includes('test_suite')) {
+  startServer().catch((err) => {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  });
+}

@@ -1012,21 +1012,26 @@ export function addLateRegistration(
     isOfflineCreated: isOffline,
   };
 
-  // If requested and ageCategory is specified, deduct from appropriate stock
+  // If requested and ageCategory is specified, deduct from appropriate stock with strict availability check
   if (deductStock && data.ageCategory) {
     const stockCat: StockCategory =
       data.ageCategory === 'under_one_year' ? 'late_reg_under_year' : 'late_reg_over_year';
-    if (db.stocks[stockCat]) {
-      db.stocks[stockCat].currentStock = Math.max(0, db.stocks[stockCat].currentStock - 1);
-      db.stocks[stockCat].totalDispensed += 1;
-      db.stocks[stockCat].lastUpdated = now;
+    const targetStock = db.stocks[stockCat];
+    if (!targetStock || targetStock.currentStock < 1) {
+      throw new Error(`الرصيد غير كافٍ لصرف استمارة ساقط قيد (${targetStock?.name || stockCat}). الرصيد الحالي: ${targetStock?.currentStock || 0}`);
     }
+    targetStock.currentStock -= 1;
+    targetStock.totalDispensed += 1;
+    targetStock.lastUpdated = now;
   }
 
   db.lateRegistrations.unshift(record);
 
   // Enqueue for central synchronization
+  const syncId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sync-${Date.now()}`;
   enqueueSyncItem({
+    syncId,
+    operationKey: `LATE_REG_ADD:${record.id}:${syncId}`,
     transactionId: txId,
     deviceId: devId,
     userId: record.staffName || 'أحمد محمود',
@@ -1047,11 +1052,28 @@ export function updateLateRegistration(
   const db = getDatabase();
   const index = db.lateRegistrations.findIndex((r) => r.id === id);
   if (index !== -1) {
-    db.lateRegistrations[index] = {
+    const updatedRecord = {
       ...db.lateRegistrations[index],
       ...updates,
       updatedAt: new Date().toISOString(),
     };
+    db.lateRegistrations[index] = updatedRecord;
+
+    const syncId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sync-${Date.now()}`;
+    const txId = generateGlobalTxId();
+    const devId = getOrCreateDeviceId();
+    enqueueSyncItem({
+      syncId,
+      operationKey: `LATE_REG_UPDATE:${id}:${syncId}`,
+      transactionId: txId,
+      deviceId: devId,
+      userId: updatedRecord.staffName || 'كاتب صحة سفلاق',
+      operationType: 'LATE_REG_UPDATE',
+      tableName: 'lateRegistrations',
+      recordId: id,
+      payload: updatedRecord,
+    }).catch((err) => console.warn('Enqueue late reg update notice:', err));
+
     saveDatabase(db);
   }
   return db;
@@ -1143,7 +1165,10 @@ export function trackLateRegistrationStatus(
 
   const updateTxId = generateGlobalTxId();
   const devId = getOrCreateDeviceId();
+  const syncId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sync-${Date.now()}`;
   enqueueSyncItem({
+    syncId,
+    operationKey: `LATE_REG_UPDATE:${id}:${syncId}`,
     transactionId: updateTxId,
     deviceId: devId,
     userId: actionDetails.staffName || current.staffName || 'كاتب صحة سفلاق',

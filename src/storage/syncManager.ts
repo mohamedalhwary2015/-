@@ -104,7 +104,7 @@ const DEFAULT_SYNC_CONFIG: AutoSyncConfig = {
 // 1. IndexedDB Durable Storage Implementation
 // ==========================================
 const IDB_NAME = 'SaflaqHealthOffice_DurableStore';
-const IDB_VERSION = 2;
+const IDB_VERSION = 3;
 const SNAPSHOTS_STORE = 'snapshots';
 const QUEUE_STORE = 'sync_queue';
 
@@ -118,6 +118,7 @@ function openDurableDB(): Promise<IDBDatabase> {
 
     request.onupgradeneeded = (event) => {
       const db = (event.target as IDBOpenDBRequest).result;
+      const tx = (event.target as IDBOpenDBRequest).transaction;
       if (!db.objectStoreNames.contains(SNAPSHOTS_STORE)) {
         const store = db.createObjectStore(SNAPSHOTS_STORE, { keyPath: 'id' });
         store.createIndex('timestamp', 'timestamp', { unique: false });
@@ -125,8 +126,18 @@ function openDurableDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(QUEUE_STORE)) {
         const qStore = db.createObjectStore(QUEUE_STORE, { keyPath: 'syncId' });
         qStore.createIndex('status', 'status', { unique: false });
-        qStore.createIndex('transactionId', 'transactionId', { unique: true });
+        qStore.createIndex('transactionId', 'transactionId', { unique: false });
+        qStore.createIndex('operationKey', 'operationKey', { unique: false });
         qStore.createIndex('createdAt', 'createdAt', { unique: false });
+      } else if (tx) {
+        const qStore = tx.objectStore(QUEUE_STORE);
+        if (qStore.indexNames.contains('transactionId')) {
+          qStore.deleteIndex('transactionId');
+        }
+        qStore.createIndex('transactionId', 'transactionId', { unique: false });
+        if (!qStore.indexNames.contains('operationKey')) {
+          qStore.createIndex('operationKey', 'operationKey', { unique: false });
+        }
       }
     };
 
@@ -581,7 +592,12 @@ export async function flushSyncQueue(currentDb: AppDatabase): Promise<{
     // Process queue clearance based on server response
     let clearedCount = 0;
     for (const result of resData.results || []) {
-      if (result.status === 'processed' || result.status === 'already_processed') {
+      if (
+        result.status === 'processed' ||
+        result.status === 'already_processed' ||
+        result.status === 'rejected_before_reset' ||
+        result.status === 'ignored_tombstoned'
+      ) {
         await removeQueueItem(result.syncId);
         clearedCount++;
       } else {
@@ -712,9 +728,17 @@ export async function pullIncrementalChanges(currentDb: AppDatabase): Promise<{
         return Boolean((r.id && tombstoneIds.has(r.id)) || (r.transactionId && tombstoneIds.has(r.transactionId)));
       };
 
-      // Purge any local dispense record that has a tombstone
+      // Purge any local record that has a tombstone
       if (currentDb.dispenseRecords && currentDb.dispenseRecords.some(isTombstoned)) {
         currentDb.dispenseRecords = currentDb.dispenseRecords.filter((r) => !isTombstoned(r));
+        modified = true;
+      }
+      if (currentDb.supplyTransactions && currentDb.supplyTransactions.some(isTombstoned)) {
+        currentDb.supplyTransactions = currentDb.supplyTransactions.filter((s) => !isTombstoned(s));
+        modified = true;
+      }
+      if (currentDb.lateRegistrations && currentDb.lateRegistrations.some(isTombstoned)) {
+        currentDb.lateRegistrations = currentDb.lateRegistrations.filter((l) => !isTombstoned(l));
         modified = true;
       }
 
@@ -740,13 +764,16 @@ export async function pullIncrementalChanges(currentDb: AppDatabase): Promise<{
       }
 
       // 2. Merge Supplies
-      const validSupplies = supplyTransactions.filter(isAfterReset);
+      const validSupplies = supplyTransactions.filter((s: any) => isAfterReset(s) && !isTombstoned(s));
       if (validSupplies.length > 0) {
         const sMap = new Map();
         (currentDb.supplyTransactions || []).forEach((s) => sMap.set(s.id, s));
         validSupplies.forEach((s: any) => {
           if (!sMap.has(s.id)) {
             sMap.set(s.id, s);
+          } else {
+            const existing = sMap.get(s.id);
+            sMap.set(s.id, { ...existing, ...s });
           }
         });
         currentDb.supplyTransactions = Array.from(sMap.values());
@@ -754,7 +781,7 @@ export async function pullIncrementalChanges(currentDb: AppDatabase): Promise<{
       }
 
       // 3. Merge Late Registrations
-      const validLateRegs = lateRegistrations.filter(isAfterReset);
+      const validLateRegs = lateRegistrations.filter((l: any) => isAfterReset(l) && !isTombstoned(l));
       if (validLateRegs.length > 0) {
         const lMap = new Map();
         (currentDb.lateRegistrations || []).forEach((l) => lMap.set(l.id, l));
@@ -803,13 +830,12 @@ export async function pullIncrementalChanges(currentDb: AppDatabase): Promise<{
           });
         });
 
-        const damaged = Number(currentDb.stocks[key]?.damagedOrCancelled || 0);
+        // Non-destructive: update received/dispensed metadata without overwriting recorded currentStock
         currentDb.stocks[key] = {
           ...currentDb.stocks[key],
           openingStock: openingQty,
           totalReceived,
           totalDispensed,
-          currentStock: Math.max(0, openingQty + totalReceived - totalDispensed - damaged),
           lastUpdated: new Date().toISOString(),
         };
       }
@@ -1109,20 +1135,20 @@ export function mergeClientWithServer(clientDb: AppDatabase, serverDb: AppDataba
     }
   });
 
-  // 2. Supply Transactions: Union by ID with Reset Boundary filtering
+  // 2. Supply Transactions: Union by ID with Reset Boundary & Tombstone filtering
   const supplyMap = new Map<string, any>();
-  (serverDb.supplyTransactions || []).forEach((s) => s?.id && isAfterReset(s) && supplyMap.set(s.id, s));
+  (serverDb.supplyTransactions || []).forEach((s) => s?.id && isAfterReset(s) && !isTombstoned(s) && supplyMap.set(s.id, s));
   (clientDb.supplyTransactions || []).forEach((s) => {
-    if (s?.id && isAfterReset(s) && !supplyMap.has(s.id)) {
+    if (s?.id && isAfterReset(s) && !isTombstoned(s) && !supplyMap.has(s.id)) {
       supplyMap.set(s.id, s);
     }
   });
 
-  // 3. Late Registrations: Union by ID with Reset Boundary filtering
+  // 3. Late Registrations: Union by ID with Reset Boundary & Tombstone filtering
   const lateRegMap = new Map<string, any>();
-  (serverDb.lateRegistrations || []).forEach((l) => l?.id && isAfterReset(l) && lateRegMap.set(l.id, l));
+  (serverDb.lateRegistrations || []).forEach((l) => l?.id && isAfterReset(l) && !isTombstoned(l) && lateRegMap.set(l.id, l));
   (clientDb.lateRegistrations || []).forEach((l) => {
-    if (l?.id && isAfterReset(l)) {
+    if (l?.id && isAfterReset(l) && !isTombstoned(l)) {
       if (!lateRegMap.has(l.id)) {
         lateRegMap.set(l.id, l);
       } else {
@@ -1160,8 +1186,7 @@ export function mergeClientWithServer(clientDb: AppDatabase, serverDb: AppDataba
     ? (effectiveBoundary === clientBoundary ? clientDb.openingBalances : serverDb.openingBalances) || clientDb.openingBalances || serverDb.openingBalances
     : clientDb.openingBalances || serverDb.openingBalances;
 
-  // 4. Mathematical Reconstruction of Stocks (Anti-corruption guarantee)
-  // Formula: actualBalance = openingStock + sum(validSupplies) - sum(validDispenses) - damagedOrCancelled
+  // 4. Non-Destructive Stock Preservation
   const mergedStocks = { ...(serverDb.stocks || clientDb.stocks || {}) };
   for (const key of Object.keys(mergedStocks) as (keyof typeof mergedStocks)[]) {
     const sStock = mergedStocks[key];
@@ -1185,7 +1210,13 @@ export function mergeClientWithServer(clientDb: AppDatabase, serverDb: AppDataba
     const damagedOrCancelled = effectiveBoundary
       ? 0
       : Number(clientDb.stocks?.[key]?.damagedOrCancelled || serverDb.stocks?.[key]?.damagedOrCancelled || 0);
-    const calculatedCurrent = Math.max(0, openingQty + totalReceived - totalDispensed - damagedOrCancelled);
+
+    // Rule 12: Strictly preserve recorded currentStock instead of overwriting with calculated formula
+    const clientStockVal = clientDb.stocks?.[key]?.currentStock;
+    const serverStockVal = serverDb.stocks?.[key]?.currentStock;
+    const preservedCurrentStock = clientStockVal !== undefined
+      ? clientStockVal
+      : (serverStockVal !== undefined ? serverStockVal : sStock.currentStock);
 
     mergedStocks[key] = {
       ...sStock,
@@ -1195,7 +1226,7 @@ export function mergeClientWithServer(clientDb: AppDatabase, serverDb: AppDataba
       totalReceived,
       totalDispensed,
       damagedOrCancelled,
-      currentStock: calculatedCurrent,
+      currentStock: preservedCurrentStock,
       lastUpdated: new Date().toISOString(),
     };
   }

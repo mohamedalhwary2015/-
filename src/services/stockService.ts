@@ -306,6 +306,19 @@ export function runFullIntegrityCheck(
     }
   });
 
+  (db.lateRegistrations || []).forEach((l) => {
+    if (tombstonedRecordIds.has(l.id)) {
+      issues.push({
+        id: `tombstone-revived-late-${l.id}`,
+        type: 'CRITICAL',
+        category: 'ORPHAN_TOMBSTONE',
+        title: `استمارة ساقط قيد محذوفة ما زالت موجودة في السجلات النشطة`,
+        description: `الاستمارة (${l.id}) مسجلة كحركة محذوفة في Tombstones ولكنها ما زالت مدرجة.`,
+        recordId: l.id,
+      });
+    }
+  });
+
   // 5. فحص التدقيق الجردي للأرصدة (Stock Calculation & Discrepancies)
   const stockAudit = {} as FullIntegrityReport['stockAudit'];
   const categories = Object.keys(stocks) as StockCategory[];
