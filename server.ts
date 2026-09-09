@@ -9,6 +9,10 @@ const BACKUPS_DIR = path.join(DATA_DIR, 'backups');
 const DB_FILE = path.join(DATA_DIR, 'database.json');
 const PROCESSED_TX_FILE = path.join(DATA_DIR, 'processedTransactions.json');
 
+// Security & Authentication Configuration
+const API_ACCESS_TOKEN = process.env.API_ACCESS_TOKEN || 'saflaq-office-secure-token-2026';
+const ADMIN_SECRET_KEY = process.env.ADMIN_SECRET_KEY || 'saflaq-admin-destructive-auth-2026';
+
 // Ensure storage directories exist
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -335,6 +339,54 @@ async function startServer() {
     next();
   });
 
+  // 0. API Authentication Middleware for all /api/* routes
+  // Protects citizen data, medical records, and inventory transactions from unauthorized access
+  app.use('/api', (req, res, next) => {
+    // Exempt /health endpoint so basic health/liveness probes function without credential overhead
+    if (req.path === '/health') {
+      return next();
+    }
+
+    const authHeader = req.headers['authorization'];
+    const apiKeyHeader = req.headers['x-api-key'];
+
+    let providedToken = '';
+    if (authHeader && typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+      providedToken = authHeader.substring(7).trim();
+    } else if (apiKeyHeader && typeof apiKeyHeader === 'string') {
+      providedToken = apiKeyHeader.trim();
+    }
+
+    if (!providedToken || providedToken !== API_ACCESS_TOKEN) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized',
+        message: 'غير مصرح: مفتاح التحقق مفقود أو غير صحيح (Unauthorized)',
+      });
+    }
+
+    next();
+  });
+
+  // Strict Authentication Guard for Destructive Endpoints (/api/factory-reset and /api/repair/apply)
+  function verifyDestructiveAdminAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+    const adminKeyHeader = req.headers['x-admin-key'];
+    const bodyKey = req.body?.adminSecretKey;
+    const providedAdminKey =
+      (typeof adminKeyHeader === 'string' ? adminKeyHeader.trim() : '') ||
+      (typeof bodyKey === 'string' ? bodyKey.trim() : '');
+
+    if (!providedAdminKey || providedAdminKey !== ADMIN_SECRET_KEY) {
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized',
+        message: 'غير مصرح بتنفيذ العمليات الحرجة والتدميرية: توكن الإدارة مفقود أو غير صحيح (Unauthorized)',
+      });
+    }
+
+    next();
+  }
+
   // 1. Health check endpoint
   app.get('/api/health', (req, res) => {
     const db = cachedDatabase || loadDatabaseFromDisk();
@@ -527,14 +579,38 @@ async function startServer() {
               // Record already present: update metadata without double-deducting stock
               db.dispenseRecords[existingIdx] = { ...db.dispenseRecords[existingIdx], ...rec };
             } else {
-              // Deduct stock centrally according to standard rules
+              // Deduct stock centrally according to standard rules without Math.max hiding deficits
               if (Array.isArray(rec.itemsDeducted)) {
                 rec.itemsDeducted.forEach((it: any) => {
                   const stock = db.stocks[it.stockCategory];
                   if (stock) {
-                    stock.currentStock = Math.max(0, stock.currentStock - Number(it.quantity || 0));
-                    stock.totalDispensed = (stock.totalDispensed || 0) + Number(it.quantity || 0);
+                    const deductQty = Number(it.quantity || 0);
+                    stock.currentStock = Number(stock.currentStock || 0) - deductQty;
+                    stock.totalDispensed = (stock.totalDispensed || 0) + deductQty;
                     stock.lastUpdated = now;
+
+                    // Automatically record CRITICAL IntegrityIssue if stock drops below zero
+                    if (stock.currentStock < 0) {
+                      if (!db.integrityIssues) db.integrityIssues = [];
+                      db.integrityIssues.push({
+                        id: `neg-balance-${it.stockCategory}-${rec.id || txId}-${Date.now()}`,
+                        type: 'CRITICAL',
+                        category: 'NEGATIVE_BALANCE',
+                        title: `عجز حقيقي ورصيد سالب في صنف: ${stock.name || it.stockCategory}`,
+                        description: `تمت مزامنة حركة صرف (${rec.id || txId}) بتاريخ (${rec.date || now}) أدت إلى عجز حقيقي في الرصيد ليصبح (${stock.currentStock}) بكمية منصرفة (${deductQty}).`,
+                        recordId: rec.id,
+                        transactionId: txId,
+                        stockCategory: it.stockCategory,
+                        details: {
+                          date: rec.date || now,
+                          affectedCategory: it.stockCategory,
+                          causingTransactionId: txId,
+                          causingRecordId: rec.id,
+                          quantityDispensed: deductQty,
+                          resultingStock: stock.currentStock,
+                        },
+                      });
+                    }
                   }
                 });
               }
@@ -603,8 +679,31 @@ async function startServer() {
                   const diff = newQty - oldQty;
                   if (diff !== 0 && db.stocks[cat]) {
                     if (diff > 0) {
-                      db.stocks[cat].currentStock = Math.max(0, db.stocks[cat].currentStock - diff);
+                      db.stocks[cat].currentStock = Number(db.stocks[cat].currentStock || 0) - diff;
                       db.stocks[cat].totalDispensed = (db.stocks[cat].totalDispensed || 0) + diff;
+
+                      // Record CRITICAL IntegrityIssue if adjustment resulted in negative balance
+                      if (db.stocks[cat].currentStock < 0) {
+                        if (!db.integrityIssues) db.integrityIssues = [];
+                        db.integrityIssues.push({
+                          id: `neg-balance-update-${cat}-${targetId || targetTxId}-${Date.now()}`,
+                          type: 'CRITICAL',
+                          category: 'NEGATIVE_BALANCE',
+                          title: `عجز حقيقي ورصيد سالب في صنف: ${db.stocks[cat].name || cat}`,
+                          description: `تم تعديل حركة صرف (${targetId || targetTxId}) بفارق زيادة (${diff}) أدى إلى عجز حقيقي في الرصيد ليصبح (${db.stocks[cat].currentStock}).`,
+                          recordId: targetId,
+                          transactionId: targetTxId,
+                          stockCategory: cat,
+                          details: {
+                            date: updates.date || now,
+                            affectedCategory: cat,
+                            causingTransactionId: targetTxId,
+                            causingRecordId: targetId,
+                            deltaIncrease: diff,
+                            resultingStock: db.stocks[cat].currentStock,
+                          },
+                        });
+                      }
                     } else {
                       const restoreQty = Math.abs(diff);
                       db.stocks[cat].currentStock = (db.stocks[cat].currentStock || 0) + restoreQty;
@@ -650,9 +749,32 @@ async function startServer() {
                 rec.itemsDeducted.forEach((it: any) => {
                   const stock = db.stocks[it.stockCategory];
                   if (stock) {
-                    stock.currentStock = Math.max(0, stock.currentStock - Number(it.quantity || 0));
-                    stock.totalDispensed = (stock.totalDispensed || 0) + Number(it.quantity || 0);
+                    const deductQty = Number(it.quantity || 0);
+                    stock.currentStock = Number(stock.currentStock || 0) - deductQty;
+                    stock.totalDispensed = (stock.totalDispensed || 0) + deductQty;
                     stock.lastUpdated = now;
+
+                    if (stock.currentStock < 0) {
+                      if (!db.integrityIssues) db.integrityIssues = [];
+                      db.integrityIssues.push({
+                        id: `neg-balance-rec-${it.stockCategory}-${rec.id || targetTxId}-${Date.now()}`,
+                        type: 'CRITICAL',
+                        category: 'NEGATIVE_BALANCE',
+                        title: `عجز حقيقي ورصيد سالب في صنف: ${stock.name || it.stockCategory}`,
+                        description: `تمت إضافة حركة صرف معدلة (${rec.id || targetTxId}) أدت إلى عجز حقيقي في الرصيد ليصبح (${stock.currentStock}) بكمية منصرفة (${deductQty}).`,
+                        recordId: rec.id,
+                        transactionId: targetTxId,
+                        stockCategory: it.stockCategory,
+                        details: {
+                          date: rec.date || now,
+                          affectedCategory: it.stockCategory,
+                          causingTransactionId: targetTxId,
+                          causingRecordId: rec.id,
+                          quantityDispensed: deductQty,
+                          resultingStock: stock.currentStock,
+                        },
+                      });
+                    }
                   }
                 });
               }
@@ -925,9 +1047,31 @@ async function startServer() {
           }
 
           if (catDeducted && db.stocks[catDeducted]) {
-            db.stocks[catDeducted].currentStock = Math.max(0, (db.stocks[catDeducted].currentStock || 0) - qtyDeducted);
+            db.stocks[catDeducted].currentStock = Number(db.stocks[catDeducted].currentStock || 0) - qtyDeducted;
             db.stocks[catDeducted].totalReceived = Math.max(0, (db.stocks[catDeducted].totalReceived || 0) - qtyDeducted);
             db.stocks[catDeducted].lastUpdated = now;
+
+            if (db.stocks[catDeducted].currentStock < 0) {
+              if (!db.integrityIssues) db.integrityIssues = [];
+              db.integrityIssues.push({
+                id: `neg-balance-delsup-${catDeducted}-${targetId || targetTxId}-${Date.now()}`,
+                type: 'CRITICAL',
+                category: 'NEGATIVE_BALANCE',
+                title: `عجز حقيقي ورصيد سالب في صنف: ${db.stocks[catDeducted].name || catDeducted}`,
+                description: `تم حذف حركة توريد (${targetId || targetTxId}) بكمية (${qtyDeducted}) أدت إلى عجز حقيقي في الرصيد ليصبح (${db.stocks[catDeducted].currentStock}).`,
+                recordId: targetId,
+                transactionId: targetTxId,
+                stockCategory: catDeducted,
+                details: {
+                  date: item.payload?.deletedAt || now,
+                  affectedCategory: catDeducted,
+                  causingTransactionId: targetTxId,
+                  causingRecordId: targetId,
+                  quantityDeducted: qtyDeducted,
+                  resultingStock: db.stocks[catDeducted].currentStock,
+                },
+              });
+            }
           }
 
           db.syncTombstones.push({
@@ -988,9 +1132,30 @@ async function startServer() {
                 const stockCat =
                   late.ageCategory === 'under_one_year' ? 'late_reg_under_year' : 'late_reg_over_year';
                 if (db.stocks[stockCat]) {
-                  db.stocks[stockCat].currentStock = Math.max(0, db.stocks[stockCat].currentStock - 1);
+                  db.stocks[stockCat].currentStock = Number(db.stocks[stockCat].currentStock || 0) - 1;
                   db.stocks[stockCat].totalDispensed = (db.stocks[stockCat].totalDispensed || 0) + 1;
                   db.stocks[stockCat].lastUpdated = now;
+
+                  if (db.stocks[stockCat].currentStock < 0) {
+                    if (!db.integrityIssues) db.integrityIssues = [];
+                    db.integrityIssues.push({
+                      id: `neg-balance-late-${stockCat}-${late.id || txId}-${Date.now()}`,
+                      type: 'CRITICAL',
+                      category: 'NEGATIVE_BALANCE',
+                      title: `عجز حقيقي ورصيد سالب في استمارات ساقط القيد: ${db.stocks[stockCat].name || stockCat}`,
+                      description: `تم تسجيل استمارة ساقط قيد (${late.id || txId}) أدت إلى عجز حقيقي في الرصيد ليصبح (${db.stocks[stockCat].currentStock}).`,
+                      recordId: late.id,
+                      transactionId: txId,
+                      stockCategory: stockCat,
+                      details: {
+                        date: late.createdAt || now,
+                        affectedCategory: stockCat,
+                        causingTransactionId: txId,
+                        causingRecordId: late.id,
+                        resultingStock: db.stocks[stockCat].currentStock,
+                      },
+                    });
+                  }
                 }
               }
               db.lateRegistrations.unshift(late);
@@ -1257,7 +1422,7 @@ async function startServer() {
 
   // 7. Apply Audited Production Repair (POST /api/repair/apply)
   // Non-destructive: takes immutable backup first, writes report file, and atomically updates clean state
-  app.post('/api/repair/apply', (req, res) => {
+  app.post('/api/repair/apply', verifyDestructiveAdminAuth, (req, res) => {
     try {
       const { database: cleanDb, reportMarkdown, removedCount, deviceId } = req.body;
       if (!cleanDb || typeof cleanDb !== 'object') {
@@ -1326,7 +1491,7 @@ async function startServer() {
   // 8. Radical Production Factory Reset Endpoint (POST /api/factory-reset)
   // Takes an immutable pre-reset backup first, wipes operational collections atomically,
   // resets all stock balances to zero, clears transaction idempotency registry, and sets Reset Boundary.
-  app.post('/api/factory-reset', (req, res) => {
+  app.post('/api/factory-reset', verifyDestructiveAdminAuth, (req, res) => {
     try {
       const { resetBoundary, clientDatabase, deviceId } = req.body;
       if (!resetBoundary || !resetBoundary.resetId) {

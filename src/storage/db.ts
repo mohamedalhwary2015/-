@@ -21,6 +21,7 @@ import {
   runFullIntegrityCheck 
 } from '../services/stockService';
 export { validateDispenseAvailability, recalculateAllStocks, runFullIntegrityCheck };
+import { getApiAuthHeaders, getAdminSecretKey } from './apiAuth';
 import { 
   executeAutoSync, 
   markHasPendingChanges,
@@ -1864,15 +1865,16 @@ export async function performFactoryReset(
         console.log('[Factory Reset] Sending factory-reset command to server...');
         const response = await fetch('/api/factory-reset', {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Cache-Control': 'no-cache',
-          },
+          headers: getApiAuthHeaders({
+            isDestructive: true,
+            extraHeaders: { 'Cache-Control': 'no-cache' },
+          }),
           body: JSON.stringify({
             resetBoundary,
             clientDatabase: cleanDb,
             deviceId: getOrCreateDeviceId(),
             reason: options?.reason,
+            adminSecretKey: getAdminSecretKey(),
           }),
         });
 

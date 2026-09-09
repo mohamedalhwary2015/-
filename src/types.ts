@@ -268,6 +268,7 @@ export interface AppDatabase {
   openingBalances?: OpeningBalanceRecord;
   resetBoundary?: ResetBoundary;
   syncTombstones?: SyncTombstone[];
+  integrityIssues?: IntegrityIssue[];
   officeSettings: {
     officeName: string;
     center: string;

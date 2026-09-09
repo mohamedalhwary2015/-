@@ -9,6 +9,7 @@ import {
   isKnownDemoOrSeedTransaction 
 } from '../storage/repairEngine';
 import { getStoredSnapshotsFromIDB } from '../storage/syncManager';
+import { getApiAuthHeaders } from '../storage/apiAuth';
 import {
   Wrench,
   ShieldAlert,
@@ -83,7 +84,9 @@ export const ProductionDataRepairModal: React.FC<ProductionDataRepairModalProps>
     // Fetch Online database
     setIsLoadingOnline(true);
     setOnlineError(null);
-    fetch('/api/sync?t=' + Date.now())
+    fetch('/api/sync?t=' + Date.now(), {
+      headers: getApiAuthHeaders(),
+    })
       .then((res) => {
         if (!res.ok) throw new Error('فشل استرداد بيانات السحابة Online');
         return res.json();

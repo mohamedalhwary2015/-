@@ -1,6 +1,7 @@
 import { AppDatabase, StockCategory, SupplyTransaction, DispenseRecord, LateRegistrationRecord } from '../types';
 import { getOrCreateDeviceId, saveDurableSnapshotToIDB } from './syncManager';
 import { STOCK_CATEGORIES_INFO } from './db';
+import { getApiAuthHeaders, getAdminSecretKey } from './apiAuth';
 
 export type RecordClassification = 
   | 'valid_both'             // A: حركة فعلية موجودة Offline و Online
@@ -393,8 +394,8 @@ export function compareOfflineAndOnlineDatabases(
 
     const damagedOrCancelled = Number(offStock?.damagedOrCancelled || onStock?.damagedOrCancelled || 0);
 
-    // Exact mathematical balance based on real transactions
-    const calculatedActualStock = Math.max(0, openingStock + realReceived - realDispensed - damagedOrCancelled);
+    // Exact mathematical balance based on real transactions without clamping Math.max
+    const calculatedActualStock = openingStock + realReceived - realDispensed - damagedOrCancelled;
 
     const onCurrent = Number(onStock?.currentStock || 0);
     const offCurrent = Number(offStock?.currentStock || 0);
@@ -402,7 +403,9 @@ export function compareOfflineAndOnlineDatabases(
     const hasDiscrepancy = discrepancy !== 0;
 
     let explanation = 'الرصيد الفعلي مطابق للحركات الحقيقية.';
-    if (hasDiscrepancy) {
+    if (calculatedActualStock < 0) {
+      explanation = `عجز حقيقي (تم صرف كمية تفوق الرصيد المتاح فعلياً): الناتج الحسابي هو (${calculatedActualStock}) بناءً على رصيد افتتاحي (${openingStock}) + وارد فعلي (${realReceived}) - منصرف فعلي (${realDispensed}) - تالف (${damagedOrCancelled}). الفارق مع السحابة: (${discrepancy > 0 ? `+${discrepancy}` : discrepancy}).`;
+    } else if (hasDiscrepancy) {
       explanation = `يوجد تباين بمقدار (${discrepancy > 0 ? `+${discrepancy}` : discrepancy}). الرصيد المخزن في السحابة (${onCurrent}) ناتج عن أرقام تجريبية و/أو توريدات غير فعلية تمت إضافتها مع التحديث، والرصيد الفعلي المحسوب من الحركات المعتمدة هو (${calculatedActualStock}).`;
     }
 
@@ -745,7 +748,7 @@ export async function executeProductionRepair(
     });
 
     const damagedOrCancelled = Number(cleanedDb.stocks?.[cat]?.damagedOrCancelled || 0);
-    const calculatedCurrent = Math.max(0, openingQty + receivedReal - dispensedReal - damagedOrCancelled);
+    const calculatedCurrent = openingQty + receivedReal - dispensedReal - damagedOrCancelled;
 
     rebuiltStocks[cat] = {
       id: cat,
@@ -777,12 +780,13 @@ export async function executeProductionRepair(
   try {
     const res = await fetch('/api/repair/apply', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getApiAuthHeaders({ isDestructive: true }),
       body: JSON.stringify({
         database: cleanedDb,
         reportMarkdown: auditReport.markdownReport,
         removedCount,
         deviceId: getOrCreateDeviceId(),
+        adminSecretKey: getAdminSecretKey(),
       }),
     });
 
@@ -937,7 +941,7 @@ export function validateDatabaseIntegrity(db: AppDatabase): DatabaseIntegrityRep
       });
 
       const damaged = Number(stock.damagedOrCancelled || 0);
-      const expected = Math.max(0, openingQty + received - dispensed - damaged);
+      const expected = openingQty + received - dispensed - damaged;
 
       if (stock.currentStock !== expected) {
         stockDiscrepancies.push({

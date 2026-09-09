@@ -217,15 +217,37 @@ export function runFullIntegrityCheck(
   for (const [catKey, item] of Object.entries(stocks)) {
     const current = Number(item.currentStock);
     if (isNaN(current) || current < 0) {
+      const loggedList = (db.integrityIssues || []).filter(
+        (i) => i.stockCategory === catKey && i.category === 'NEGATIVE_BALANCE'
+      );
+      const latestLogged = loggedList[loggedList.length - 1];
+
       issues.push({
         id: `neg-stock-${catKey}-${Date.now()}`,
         type: 'CRITICAL',
         category: 'NEGATIVE_BALANCE',
-        title: `رصيد سالب في صنف: ${item.name || catKey}`,
-        description: `الرصيد الحالي المسجل للصنف هو (${current}) وهو أقل من الصفر، مما يشير إلى صرف فائض غير قانوني.`,
+        title: `عجز حقيقي ورصيد سالب في صنف: ${item.name || catKey}`,
+        description: `الرصيد الحالي المسجل للصنف هو (${current}) وهو أقل من الصفر، مما يشير إلى عجز حقيقي وصرف يفوق الرصيد المتاح.${latestLogged ? ` تفاصيل الحركة المسببة: ${latestLogged.transactionId || latestLogged.recordId || ''}` : ''}`,
         stockCategory: catKey as StockCategory,
-        details: { currentStock: current },
+        recordId: latestLogged?.recordId,
+        transactionId: latestLogged?.transactionId,
+        details: {
+          currentStock: current,
+          affectedCategory: catKey,
+          causingTransactionId: latestLogged?.transactionId,
+          causingRecordId: latestLogged?.recordId,
+          ...(latestLogged?.details || {}),
+        },
       });
+    }
+  }
+
+  // دمج أي مشكلات نزاهة مسجلة مسبقاً في قاعدة البيانات لم تكن مشمولة
+  if (Array.isArray(db.integrityIssues)) {
+    for (const loggedIssue of db.integrityIssues) {
+      if (!issues.some((iss) => iss.id === loggedIssue.id || (iss.stockCategory === loggedIssue.stockCategory && iss.category === loggedIssue.category))) {
+        issues.push(loggedIssue);
+      }
     }
   }
 

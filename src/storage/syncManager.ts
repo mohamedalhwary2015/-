@@ -1,4 +1,5 @@
 import { AppDatabase, AutoSyncConfig, SyncLogEntry, SyncQueueItem, SyncStatus } from '../types';
+import { getApiAuthHeaders } from './apiAuth';
 
 const SYNC_CONFIG_KEY = 'saflaq_autosync_config_v1';
 const SYNC_LOGS_KEY = 'saflaq_autosync_logs_v1';
@@ -543,7 +544,7 @@ export async function checkRealInternetConnection(): Promise<boolean> {
     const res = await fetch('/api/health?t=' + Date.now(), {
       method: 'GET',
       signal: controller.signal,
-      headers: { 'Cache-Control': 'no-cache' },
+      headers: getApiAuthHeaders({ extraHeaders: { 'Cache-Control': 'no-cache' } }),
     });
     clearTimeout(timeoutId);
     return res.ok;
@@ -570,10 +571,7 @@ export async function flushSyncQueue(currentDb: AppDatabase): Promise<{
     const deviceId = getOrCreateDeviceId();
     const response = await fetch('/api/sync/transactions', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-cache',
-      },
+      headers: getApiAuthHeaders({ extraHeaders: { 'Cache-Control': 'no-cache' } }),
       body: JSON.stringify({
         items: pendingItems,
         deviceId,
@@ -666,7 +664,7 @@ export async function pullIncrementalChanges(currentDb: AppDatabase): Promise<{
 
     const response = await fetch(url, {
       method: 'GET',
-      headers: { 'Cache-Control': 'no-cache' },
+      headers: getApiAuthHeaders({ extraHeaders: { 'Cache-Control': 'no-cache' } }),
     });
 
     if (!response.ok) {
@@ -977,10 +975,7 @@ export async function executeAutoSync(
     try {
       const response = await fetch('/api/sync', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-cache',
-        },
+        headers: getApiAuthHeaders({ extraHeaders: { 'Cache-Control': 'no-cache' } }),
         body: JSON.stringify({
           database: dbData,
           trigger,
@@ -1265,7 +1260,7 @@ export async function fetchAndApplyServerDatabase(currentLocalDb: AppDatabase): 
 
     const response = await fetch('/api/sync?t=' + Date.now(), {
       method: 'GET',
-      headers: { 'Cache-Control': 'no-cache' },
+      headers: getApiAuthHeaders({ extraHeaders: { 'Cache-Control': 'no-cache' } }),
     });
 
     if (!response.ok) {
