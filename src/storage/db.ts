@@ -21,7 +21,7 @@ import {
   runFullIntegrityCheck 
 } from '../services/stockService';
 export { validateDispenseAvailability, recalculateAllStocks, runFullIntegrityCheck };
-import { getApiAuthHeaders, getAdminSecretKey } from './apiAuth';
+import { getApiAuthHeaders } from './apiAuth';
 import { 
   executeAutoSync, 
   markHasPendingChanges,
@@ -1677,6 +1677,7 @@ export interface FactoryResetOptions {
   resetBy?: string;
   reason?: string;
   preserveOfficeSettings?: boolean;
+  adminSecretKey?: string;
 }
 
 export interface FactoryResetVerificationReport {
@@ -1866,7 +1867,7 @@ export async function performFactoryReset(
         const response = await fetch('/api/factory-reset', {
           method: 'POST',
           headers: getApiAuthHeaders({
-            isDestructive: true,
+            adminSecretKey: options?.adminSecretKey,
             extraHeaders: { 'Cache-Control': 'no-cache' },
           }),
           body: JSON.stringify({
@@ -1874,7 +1875,7 @@ export async function performFactoryReset(
             clientDatabase: cleanDb,
             deviceId: getOrCreateDeviceId(),
             reason: options?.reason,
-            adminSecretKey: getAdminSecretKey(),
+            adminSecretKey: options?.adminSecretKey,
           }),
         });
 
@@ -1882,12 +1883,19 @@ export async function performFactoryReset(
           serverResponse = await response.json();
           console.log('[Factory Reset] Server response:', serverResponse);
         } else {
-          console.warn('[Factory Reset] Server returned status:', response.status);
+          const errData = await response.json().catch(() => ({}));
+          console.warn('[Factory Reset] Server returned status:', response.status, errData);
+          if (response.status === 401) {
+            throw new Error(errData.message || 'غير مصرح بتنفيذ العمليات الحرجة والتدميرية: كلمة المرور السرية للإدارة غير صحيحة (Unauthorized)');
+          }
         }
       } else {
         console.log('[Factory Reset] Offline mode: Server wipe deferred until reconnection.');
       }
-    } catch (serverErr) {
+    } catch (serverErr: any) {
+      if (serverErr?.message?.includes('غير مصرح')) {
+        throw serverErr;
+      }
       console.warn('[Factory Reset] Network call to /api/factory-reset failed (offline safe):', serverErr);
     }
 

@@ -1,7 +1,7 @@
 import { AppDatabase, StockCategory, SupplyTransaction, DispenseRecord, LateRegistrationRecord } from '../types';
 import { getOrCreateDeviceId, saveDurableSnapshotToIDB } from './syncManager';
 import { STOCK_CATEGORIES_INFO } from './db';
-import { getApiAuthHeaders, getAdminSecretKey } from './apiAuth';
+import { getApiAuthHeaders } from './apiAuth';
 
 export type RecordClassification = 
   | 'valid_both'             // A: حركة فعلية موجودة Offline و Online
@@ -580,7 +580,8 @@ export async function executeProductionRepair(
   offlineDb: AppDatabase,
   onlineDb: AppDatabase,
   auditReport: ProductionRepairReport,
-  excludedIds: Set<string> // IDs explicitly approved for removal (only bogus/duplicates)
+  excludedIds: Set<string>, // IDs explicitly approved for removal (only bogus/duplicates)
+  adminSecretKey?: string
 ): Promise<{
   success: boolean;
   cleanedDatabase: AppDatabase;
@@ -780,23 +781,23 @@ export async function executeProductionRepair(
   try {
     const res = await fetch('/api/repair/apply', {
       method: 'POST',
-      headers: getApiAuthHeaders({ isDestructive: true }),
+      headers: getApiAuthHeaders({ adminSecretKey }),
       body: JSON.stringify({
         database: cleanedDb,
         reportMarkdown: auditReport.markdownReport,
         removedCount,
         deviceId: getOrCreateDeviceId(),
-        adminSecretKey: getAdminSecretKey(),
+        adminSecretKey,
       }),
     });
 
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.message || 'فشل الخادم في تطبيق التصحيح المعتمد');
+      throw new Error(errData.message || 'فشل الخادم في تطبيق التصحيح المعتمد: تأكد من صحة كلمة المرور السرية للإدارة');
     }
   } catch (err: any) {
-    console.warn('Server repair apply notification:', err);
-    // Even if server is temporarily unreachable, apply locally to preserve real data
+    console.error('Server repair apply error:', err);
+    throw err;
   }
 
   // 6. Save locally to localStorage and IndexedDB

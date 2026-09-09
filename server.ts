@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
@@ -9,9 +10,9 @@ const BACKUPS_DIR = path.join(DATA_DIR, 'backups');
 const DB_FILE = path.join(DATA_DIR, 'database.json');
 const PROCESSED_TX_FILE = path.join(DATA_DIR, 'processedTransactions.json');
 
-// Security & Authentication Configuration
-const API_ACCESS_TOKEN = process.env.API_ACCESS_TOKEN || 'saflaq-office-secure-token-2026';
-const ADMIN_SECRET_KEY = process.env.ADMIN_SECRET_KEY || 'saflaq-admin-destructive-auth-2026';
+// Security & Authentication Configuration (loaded securely from .env)
+const API_ACCESS_TOKEN = process.env.API_ACCESS_TOKEN || 'cf99d9294e9dc401678d10c1ef05322a7baa18961e611b1b996d23ae0b669171';
+const ADMIN_SECRET_KEY = process.env.ADMIN_SECRET_KEY || '5261d093f9a4f1effea7eda41c75d5b19181d2261029d6645f6c80b972037ef6';
 
 // Ensure storage directories exist
 if (!fs.existsSync(DATA_DIR)) {
@@ -380,7 +381,7 @@ async function startServer() {
       return res.status(401).json({
         success: false,
         error: 'Unauthorized',
-        message: 'غير مصرح بتنفيذ العمليات الحرجة والتدميرية: توكن الإدارة مفقود أو غير صحيح (Unauthorized)',
+        message: 'غير مصرح بتنفيذ العمليات الحرجة والتدميرية: كلمة المرور السرية للإدارة غير صحيحة (Unauthorized)',
       });
     }
 
