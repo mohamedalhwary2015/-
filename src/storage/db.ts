@@ -40,396 +40,149 @@ import {
 const STORAGE_KEY = 'saflaq_health_office_db_v1';
 let debounceSyncTimer: any = null;
 
-export const INITIAL_DATABASE: AppDatabase = {
-  version: 1,
-  lastBackupDate: new Date().toISOString(),
-  officeSettings: {
-    officeName: 'مكتب صحة سفلاق',
-    center: 'مركز ساقلتة',
-    directorate: 'الإدارة الصحية بساقلتة',
-    governorate: 'محافظة سوهاج',
-    currentEmployee: 'كاتب صحة سفلاق',
-  },
-  stocks: {
-    birth_certificates: {
-      id: 'birth_certificates',
-      name: 'شهادات الميلاد الورقية الرسمية',
-      category: 'birth',
-      currentStock: 145,
-      totalReceived: 150,
-      totalDispensed: 2,
-      damagedOrCancelled: 3,
-      minThreshold: 30,
-      unit: 'شهادة / استمارة',
-      lastUpdated: new Date().toISOString(),
+export function createEmptyDatabase(): AppDatabase {
+  const now = new Date().toISOString();
+  return {
+    version: 1,
+    lastBackupDate: now,
+    officeSettings: {
+      officeName: 'مكتب صحة سفلاق',
+      center: 'مركز ساقلتة',
+      directorate: 'الإدارة الصحية بساقلتة',
+      governorate: 'محافظة سوهاج',
+      currentEmployee: 'كاتب صحة سفلاق',
     },
-    birth_notifications: {
-      id: 'birth_notifications',
-      name: 'بلاغات الميلاد (إخطار تبليغ)',
-      category: 'birth',
-      currentStock: 0,
-      totalReceived: 0,
-      totalDispensed: 2,
-      damagedOrCancelled: 0,
-      minThreshold: 30,
-      unit: 'أصل بلاغ',
-      lastUpdated: new Date().toISOString(),
-    },
-    death_certificates: {
-      id: 'death_certificates',
-      name: 'شهادات الوفاة الورقية الرسمية',
-      category: 'death',
-      currentStock: 0,
-      totalReceived: 0,
-      totalDispensed: 2,
-      damagedOrCancelled: 1,
-      minThreshold: 20,
-      unit: 'شهادة / استمارة',
-      lastUpdated: new Date().toISOString(),
-    },
-    death_notifications: {
-      id: 'death_notifications',
-      name: 'بلاغات الوفاة (إخطار تبليغ)',
-      category: 'death',
-      currentStock: 0,
-      totalReceived: 0,
-      totalDispensed: 2,
-      damagedOrCancelled: 0,
-      minThreshold: 20,
-      unit: 'أصل بلاغ',
-      lastUpdated: new Date().toISOString(),
-    },
-    health_cards_male: {
-      id: 'health_cards_male',
-      name: 'بطاقات صحية ذكور (تطعيمات ورعاية)',
-      category: 'health_card',
-      currentStock: 99,
-      totalReceived: 100,
-      totalDispensed: 1,
-      damagedOrCancelled: 0,
-      minThreshold: 25,
-      unit: 'بطاقة',
-      lastUpdated: new Date().toISOString(),
-    },
-    health_cards_female: {
-      id: 'health_cards_female',
-      name: 'بطاقات صحية إناث (تطعيمات ورعاية)',
-      category: 'health_card',
-      currentStock: 99,
-      totalReceived: 100,
-      totalDispensed: 1,
-      damagedOrCancelled: 0,
-      minThreshold: 25,
-      unit: 'بطاقة',
-      lastUpdated: new Date().toISOString(),
-    },
-    late_reg_under_year: {
-      id: 'late_reg_under_year',
-      name: 'استمارات ساقط قيد (أقل من عام)',
-      category: 'late_registration',
-      currentStock: 0,
-      totalReceived: 0,
-      totalDispensed: 0,
-      damagedOrCancelled: 0,
-      minThreshold: 15,
-      unit: 'استمارة / نموذج',
-      lastUpdated: new Date().toISOString(),
-    },
-    late_reg_over_year: {
-      id: 'late_reg_over_year',
-      name: 'استمارات ساقط قيد (أكبر من عام)',
-      category: 'late_registration',
-      openingStock: 0,
-      openingSerialFrom: '001401',
-      openingSerialTo: '001440',
-      currentStock: 0,
-      totalReceived: 0,
-      totalDispensed: 0,
-      damagedOrCancelled: 0,
-      minThreshold: 15,
-      unit: 'استمارة / نموذج',
-      lastUpdated: new Date().toISOString(),
-    },
-  },
-  openingBalances: {
-    asOfDate: '2026-01-01',
-    minuteNumber: 'محضر جرد عهدة رقم 1 لسنة 2026',
-    inventoryKeeper: 'أحمد محمود (كاتب صحة سفلاق)',
-    committeeLeader: 'د. مفتش صحة سفلاق',
-    committeeMember: 'مراقب أول صحة سفلاق',
-    officeManager: 'مدير مكتب صحة سفلاق',
-    notes: 'تم جرد العهدة الدفترية والمستندية بمكتب صحة سفلاق ومطابقة الأرصدة مع دفاتر القيد الرسمية وسجلات السجل المدني بساقلتة.',
-    createdAt: '2026-01-01T08:00:00Z',
-    updatedAt: '2026-01-01T08:00:00Z',
-    items: {
+    stocks: {
       birth_certificates: {
-        stockCategory: 'birth_certificates',
-        openingQuantity: 150,
-        serialFrom: '0141851',
-        serialTo: '0142000',
+        id: 'birth_certificates',
+        name: 'شهادات الميلاد الورقية الرسمية',
+        category: 'birth',
+        currentStock: 0,
+        totalReceived: 0,
+        totalDispensed: 0,
+        damagedOrCancelled: 0,
+        openingStock: 0,
+        openingSerialFrom: '',
+        openingSerialTo: '',
         minThreshold: 30,
-        notes: 'دفاتر مسلسلة معتمدة من مديرية الشؤون الصحية بسوهاج',
+        unit: 'شهادة / استمارة',
+        lastUpdated: now,
       },
       birth_notifications: {
-        stockCategory: 'birth_notifications',
-        openingQuantity: 150,
-        serialFrom: '003201',
-        serialTo: '003350',
+        id: 'birth_notifications',
+        name: 'بلاغات الميلاد (إخطار تبليغ)',
+        category: 'birth',
+        currentStock: 0,
+        totalReceived: 0,
+        totalDispensed: 0,
+        damagedOrCancelled: 0,
+        openingStock: 0,
+        openingSerialFrom: '',
+        openingSerialTo: '',
         minThreshold: 30,
-        notes: 'دفاتر إخطار تبليغ ولادة',
+        unit: 'أصل بلاغ',
+        lastUpdated: now,
       },
       death_certificates: {
-        stockCategory: 'death_certificates',
-        openingQuantity: 80,
-        serialFrom: '089401',
-        serialTo: '089480',
+        id: 'death_certificates',
+        name: 'شهادات الوفاة الورقية الرسمية',
+        category: 'death',
+        currentStock: 0,
+        totalReceived: 0,
+        totalDispensed: 0,
+        damagedOrCancelled: 0,
+        openingStock: 0,
+        openingSerialFrom: '',
+        openingSerialTo: '',
         minThreshold: 20,
-        notes: 'دفاتر شهادات وفاة ورقية وتصاريح دفن',
+        unit: 'شهادة / استمارة',
+        lastUpdated: now,
       },
       death_notifications: {
-        stockCategory: 'death_notifications',
-        openingQuantity: 80,
-        serialFrom: '001101',
-        serialTo: '001180',
+        id: 'death_notifications',
+        name: 'بلاغات الوفاة (إخطار تبليغ)',
+        category: 'death',
+        currentStock: 0,
+        totalReceived: 0,
+        totalDispensed: 0,
+        damagedOrCancelled: 0,
+        openingStock: 0,
+        openingSerialFrom: '',
+        openingSerialTo: '',
         minThreshold: 20,
-        notes: 'دفاتر إخطار تبليغ وفاة',
+        unit: 'أصل بلاغ',
+        lastUpdated: now,
       },
       health_cards_male: {
-        stockCategory: 'health_cards_male',
-        openingQuantity: 100,
-        serialFrom: '084901',
-        serialTo: '085000',
+        id: 'health_cards_male',
+        name: 'بطاقات صحية ذكور (تطعيمات ورعاية)',
+        category: 'health_card',
+        currentStock: 0,
+        totalReceived: 0,
+        totalDispensed: 0,
+        damagedOrCancelled: 0,
+        openingStock: 0,
+        openingSerialFrom: '',
+        openingSerialTo: '',
         minThreshold: 25,
-        notes: 'بطاقات صحية زرقاء مخصصة للأطفال الذكور',
+        unit: 'بطاقة',
+        lastUpdated: now,
       },
       health_cards_female: {
-        stockCategory: 'health_cards_female',
-        openingQuantity: 100,
-        serialFrom: '094901',
-        serialTo: '095000',
+        id: 'health_cards_female',
+        name: 'بطاقات صحية إناث (تطعيمات ورعاية)',
+        category: 'health_card',
+        currentStock: 0,
+        totalReceived: 0,
+        totalDispensed: 0,
+        damagedOrCancelled: 0,
+        openingStock: 0,
+        openingSerialFrom: '',
+        openingSerialTo: '',
         minThreshold: 25,
-        notes: 'بطاقات صحية وردية مخصصة للأطفال الإناث',
+        unit: 'بطاقة',
+        lastUpdated: now,
       },
       late_reg_under_year: {
-        stockCategory: 'late_reg_under_year',
-        openingQuantity: 50,
-        serialFrom: '002101',
-        serialTo: '002150',
+        id: 'late_reg_under_year',
+        name: 'استمارات ساقط قيد (أقل من عام)',
+        category: 'late_registration',
+        currentStock: 0,
+        totalReceived: 0,
+        totalDispensed: 0,
+        damagedOrCancelled: 0,
+        openingStock: 0,
+        openingSerialFrom: '',
+        openingSerialTo: '',
         minThreshold: 15,
-        notes: 'استمارات ساقط قيد نموذج 26 أ.ح أقل من عام',
+        unit: 'استمارة / نموذج',
+        lastUpdated: now,
       },
       late_reg_over_year: {
-        stockCategory: 'late_reg_over_year',
-        openingQuantity: 40,
-        serialFrom: '001401',
-        serialTo: '001440',
+        id: 'late_reg_over_year',
+        name: 'استمارات ساقط قيد (أكبر من عام)',
+        category: 'late_registration',
+        currentStock: 0,
+        totalReceived: 0,
+        totalDispensed: 0,
+        damagedOrCancelled: 0,
+        openingStock: 0,
+        openingSerialFrom: '',
+        openingSerialTo: '',
         minThreshold: 15,
-        notes: 'استمارات ساقط قيد نموذج 26 أ.ح أكبر من عام',
+        unit: 'استمارة / نموذج',
+        lastUpdated: now,
       },
     },
-  },
-  supplyTransactions: [
-    {
-      id: 'sup-1',
-      stockCategory: 'birth_certificates',
-      date: '2026-08-15',
-      quantity: 150,
-      documentNumber: 'إذن 44/2026 مديرية سوهاج',
-      serialFrom: '0142001',
-      serialTo: '0142150',
-      supplierName: 'مخازن الإدارة الصحية بساقلتة',
-      receivedBy: 'أحمد محمود (كاتب الصحة)',
-      notes: 'الدفعة الدورية للربع الثالث',
-      createdAt: '2026-08-15T09:30:00Z',
-    },
-    {
-      id: 'sup-2',
-      stockCategory: 'health_cards_male',
-      date: '2026-08-20',
-      quantity: 100,
-      documentNumber: 'توريد رقم 118',
-      serialFrom: '085001',
-      serialTo: '085100',
-      supplierName: 'إدارة رعاية الأمومة والطفولة',
-      receivedBy: 'أحمد محمود',
-      notes: 'بطاقات صحية زرقاء مخصصة للذكور',
-      createdAt: '2026-08-20T10:15:00Z',
-    },
-    {
-      id: 'sup-3',
-      stockCategory: 'health_cards_female',
-      date: '2026-08-20',
-      quantity: 100,
-      documentNumber: 'توريد رقم 119',
-      serialFrom: '095001',
-      serialTo: '095100',
-      supplierName: 'إدارة رعاية الأمومة والطفولة',
-      receivedBy: 'أحمد محمود',
-      notes: 'بطاقات صحية وردية مخصصة للإناث',
-      createdAt: '2026-08-20T10:20:00Z',
-    },
-  ],
-  dispenseRecords: [
-    {
-      id: 'disp-1',
-      dispenseType: 'birth_male',
-      date: '2026-09-02',
-      time: '10:15',
-      beneficiaryName: 'حمزة محمود عبد الرحيم السيد',
-      gender: 'male',
-      eventDate: '2026-09-01',
-      fatherName: 'محمود عبد الرحيم السيد',
-      fatherNationalId: '29305142601977',
-      motherName: 'فاطمة جابر حسن خلف',
-      motherNationalId: '29811232600884',
-      address: 'قرية سفلاق - مركز ساقلتة - سوهاج',
-      reporterName: 'محمود عبد الرحيم السيد (الأب)',
-      reporterRelation: 'الأب',
-      reporterPhone: '01012345678',
-      certificateNumber: '0142089',
-      healthCardReceiptNumber: 'قسيمة 56832',
-      paymentAmount: 50,
-      notificationNumber: 'بل-3301',
-      itemsDeducted: [
-        { stockCategory: 'birth_certificates', quantity: 1 },
-        { stockCategory: 'birth_notifications', quantity: 1 },
-        { stockCategory: 'health_cards_male', quantity: 1 },
-      ],
-      dispensedBy: 'أحمد محمود (كاتب صحة سفلاق)',
-      notes: 'تم فحص الإخطار الطبي للولادة بمستشفى ساقلتة المركزي وتسليم البطاقة الزرقاء',
-      createdAt: '2026-09-02T10:15:00Z',
-    },
-    {
-      id: 'disp-2',
-      dispenseType: 'birth_female',
-      date: '2026-09-03',
-      time: '11:40',
-      beneficiaryName: 'مريم السيد البدوي عبد القادر',
-      gender: 'female',
-      eventDate: '2026-09-02',
-      fatherName: 'السيد البدوي عبد القادر',
-      fatherNationalId: '29107122602331',
-      motherName: 'زينب محمد عبد العال',
-      motherNationalId: '29509182601442',
-      address: 'شارع داير الناحية - سفلاق',
-      reporterName: 'السيد البدوي عبد القادر',
-      reporterRelation: 'الأب',
-      reporterPhone: '01123456789',
-      certificateNumber: '0142090',
-      healthCardReceiptNumber: 'قسيمة 56833',
-      paymentAmount: 50,
-      notificationNumber: 'بل-3302',
-      itemsDeducted: [
-        { stockCategory: 'birth_certificates', quantity: 1 },
-        { stockCategory: 'birth_notifications', quantity: 1 },
-        { stockCategory: 'health_cards_female', quantity: 1 },
-      ],
-      dispensedBy: 'أحمد محمود (كاتب صحة سفلاق)',
-      notes: 'تم استيفاء إيصال التوريد 33 ع.ح وتسليم البطاقة الصحية الوردية',
-      createdAt: '2026-09-03T11:40:00Z',
-    },
-    {
-      id: 'disp-3',
-      dispenseType: 'death',
-      date: '2026-09-03',
-      time: '13:10',
-      beneficiaryName: 'إبراهيم علي حسن الشريف',
-      gender: 'male',
-      eventDate: '2026-09-03',
-      fatherName: 'علي حسن الشريف',
-      motherName: 'خضرة أحمد عبد الله',
-      address: 'نجع حميد - سفلاق',
-      reporterName: 'حسن إبراهيم علي (الابن)',
-      reporterRelation: 'الابن',
-      reporterPhone: '01234567890',
-      certificateNumber: '089451',
-      healthCardReceiptNumber: 'غير مطلوب (حالة وفاة)',
-      paymentAmount: 0,
-      notificationNumber: 'وف-1104',
-      itemsDeducted: [
-        { stockCategory: 'death_certificates', quantity: 1 },
-        { stockCategory: 'death_notifications', quantity: 1 },
-      ],
-      dispensedBy: 'أحمد محمود (كاتب صحة سفلاق)',
-      notes: 'تم مناظرة الجثمان بمعرفة مفتش الصحة واستخراج تصريح الدفن رقم 215/2026',
-      createdAt: '2026-09-03T13:10:00Z',
-    },
-    {
-      id: 'disp-4',
-      dispenseType: 'death',
-      date: '2026-09-04',
-      time: '09:20',
-      beneficiaryName: 'فاطمة عبد الرحيم محمد خليل',
-      gender: 'female',
-      eventDate: '2026-09-03',
-      fatherName: 'عبد الرحيم محمد خليل',
-      motherName: 'زينب أحمد محمود',
-      address: 'سفلاق - ساقلتة - سوهاج',
-      reporterName: 'محمود عبد الرحيم محمد (الأخ)',
-      reporterRelation: 'الأخ',
-      reporterPhone: '01012345678',
-      certificateNumber: '089452',
-      healthCardReceiptNumber: 'غير مطلوب (حالة وفاة)',
-      paymentAmount: 0,
-      notificationNumber: 'وف-1105',
-      itemsDeducted: [
-        { stockCategory: 'death_certificates', quantity: 1 },
-        { stockCategory: 'death_notifications', quantity: 1 },
-      ],
-      dispensedBy: 'أحمد محمود (كاتب صحة سفلاق)',
-      notes: 'تم استخراج تصريح الدفن واستيفاء إخطار الوفاة وقيده بالدفتر الورقي',
-      createdAt: '2026-09-04T09:20:00Z',
-    },
-  ],
-  lateRegistrations: [
-    {
-      id: 'late-1',
-      formNumber: 'س-ق-2026/041',
-      submissionDate: '2026-08-28',
-      type: 'birth',
-      personName: 'يوسف جمال عبد الفتاح عثمان',
-      gender: 'male',
-      eventDate: '2024-03-15',
-      eventPlace: 'المنزل - قرية سفلاق',
-      fatherName: 'جمال عبد الفتاح عثمان',
-      motherName: 'هناء محمد مصطفى',
-      applicantName: 'جمال عبد الفتاح عثمان',
-      applicantRelation: 'الأب',
-      applicantNationalId: '28804052601112',
-      applicantPhone: '01099887766',
-      applicantAddress: 'سفلاق - ساقلتة - سوهاج',
-      delayReason: 'الولادة تمت بالمنزل وسفر الأب للعمل بالخارج وتعذر استخراج الشهادة في الميعاد القانوني',
-      notes: 'تم استيفاء استمارة ساقط القيد نموذج 26 أ.ح ومرفق شهادة شاهدين معتمدين وعقد زواج الوالدين، وجارٍ العرض على اللجنة الطبية الثلاثية بالإدارة الصحية بساقلتة لتقدير السن.',
-      status: 'medical_comm',
-      staffName: 'أحمد محمود',
-      createdAt: '2026-08-28T10:00:00Z',
-      updatedAt: '2026-08-30T12:00:00Z',
-    },
-    {
-      id: 'late-2',
-      formNumber: 'س-ق-2026/042',
-      submissionDate: '2026-09-01',
-      type: 'death',
-      personName: 'عائشة بدري رضوان خلف',
-      gender: 'female',
-      eventDate: '2025-11-20',
-      eventPlace: 'قرية سفلاق',
-      fatherName: 'بدري رضوان خلف',
-      motherName: 'نادية عبد السلام',
-      applicantName: 'رضوان بدري رضوان',
-      applicantRelation: 'الشقيق',
-      applicantNationalId: '27903102602234',
-      applicantPhone: '01155443322',
-      applicantAddress: 'سفلاق - بجوار مدرسة سفلاق الإعدادية',
-      delayReason: 'توفيت بالمنزل ولم يتم إبلاغ الصحة في حينه لجهل الأسرة بالإجراءات القانونية',
-      notes: 'تم تحرير محضر إداري بمركز شرطة ساقلتة برقم 3145 إداري ساقلتة لسنة 2026، وبانتظار قرار النيابة العامة وإفادة السجل المدني للتحقق من عدم وجود قيد مسبق.',
-      status: 'under_review',
-      staffName: 'أحمد محمود',
-      createdAt: '2026-09-01T09:30:00Z',
-      updatedAt: '2026-09-01T09:30:00Z',
-    },
-  ],
-};
+    openingBalances: undefined,
+    supplyTransactions: [],
+    dispenseRecords: [],
+    lateRegistrations: [],
+    syncTombstones: [],
+  };
+}
+
+export const INITIAL_DATABASE: AppDatabase = createEmptyDatabase();
 
 export function getDatabase(): AppDatabase {
   if (typeof window === 'undefined') return INITIAL_DATABASE;
@@ -469,10 +222,6 @@ export function getDatabase(): AppDatabase {
           parsed.stocks[key].openingSerialTo = '';
           needsSave = true;
         }
-      }
-      if (!parsed.openingBalances && INITIAL_DATABASE.openingBalances) {
-        parsed.openingBalances = INITIAL_DATABASE.openingBalances;
-        needsSave = true;
       }
 
       // Backward compatibility: ensure all existing records have stable transactionId and marked synced
@@ -619,7 +368,7 @@ export function updateSupplyTransaction(
         throw new Error(`لا يمكن تغيير الصنف لأن الكمية المتبقية من (${oldStock.name}) غير كافية لخصم التوريد القديم`);
       }
       oldStock.currentStock -= oldTx.quantity;
-      oldStock.totalReceived = Math.max(0, (oldStock.totalReceived || 0) - oldTx.quantity);
+      oldStock.totalReceived = (oldStock.totalReceived || 0) - oldTx.quantity;
       oldStock.lastUpdated = now;
     }
     // Add to new category stock
@@ -709,7 +458,7 @@ export function deleteSupplyTransaction(id: string, deletedBy?: string): AppData
       throw new Error(`لا يمكن حذف حركة التوريد رقم (${tx.documentNumber || tx.id}) لأن الرصيد الحالي (${stock.currentStock}) أقل من كمية التوريد (${tx.quantity}) حيث تم صرف أجزاء منها بالفعل`);
     }
     stock.currentStock -= tx.quantity;
-    stock.totalReceived = Math.max(0, (stock.totalReceived || 0) - tx.quantity);
+    stock.totalReceived = (stock.totalReceived || 0) - tx.quantity;
     stock.lastUpdated = now;
   }
 
@@ -941,7 +690,7 @@ export function deleteDispenseRecord(id: string, deletedBy?: string): AppDatabas
       const stock = db.stocks[item.stockCategory];
       if (stock) {
         stock.currentStock += Number(item.quantity || 0);
-        stock.totalDispensed = Math.max(0, (stock.totalDispensed || 0) - Number(item.quantity || 0));
+        stock.totalDispensed = (stock.totalDispensed || 0) - Number(item.quantity || 0);
         stock.lastUpdated = now;
       }
     });
@@ -1213,7 +962,7 @@ export function deleteLateRegistration(id: string, deletedBy?: string): AppDatab
       record.ageCategory === 'under_one_year' ? 'late_reg_under_year' : 'late_reg_over_year';
     if (db.stocks[stockCat]) {
       db.stocks[stockCat].currentStock += 1;
-      db.stocks[stockCat].totalDispensed = Math.max(0, (db.stocks[stockCat].totalDispensed || 0) - 1);
+      db.stocks[stockCat].totalDispensed = (db.stocks[stockCat].totalDispensed || 0) - 1;
       db.stocks[stockCat].lastUpdated = now;
     }
   }
@@ -1266,7 +1015,7 @@ export function manualAdjustStock(
   const stock = db.stocks[category];
   if (stock) {
     const diff = newQuantity - stock.currentStock;
-    stock.currentStock = Math.max(0, newQuantity);
+    stock.currentStock = newQuantity;
     if (diff < 0) {
       stock.damagedOrCancelled += Math.abs(diff);
     }
@@ -1299,16 +1048,14 @@ export function saveOpeningBalances(
         stock.minThreshold = itemData.minThreshold;
       }
       if (mode === 'override_current') {
-        stock.currentStock = Math.max(0, itemData.openingQuantity);
+        stock.currentStock = itemData.openingQuantity;
       } else {
         // Recalculate: current = opening + totalReceived - totalDispensed - damagedOrCancelled
-        stock.currentStock = Math.max(
-          0,
+        stock.currentStock =
           (itemData.openingQuantity || 0) +
-            (stock.totalReceived || 0) -
-            (stock.totalDispensed || 0) -
-            (stock.damagedOrCancelled || 0)
-        );
+          (stock.totalReceived || 0) -
+          (stock.totalDispensed || 0) -
+          (stock.damagedOrCancelled || 0);
       }
       stock.lastUpdated = now;
     }
@@ -1512,167 +1259,6 @@ export function exportToCSV(filename: string, rows: string[][]): void {
   URL.revokeObjectURL(url);
 }
 
-export function createEmptyDatabase(): AppDatabase {
-  const now = new Date().toISOString();
-  return {
-    version: 1,
-    lastBackupDate: now,
-    officeSettings: {
-      officeName: 'مكتب صحة سفلاق',
-      center: 'مركز ساقلتة',
-      directorate: 'مديرية الشؤون الصحية بسوهاج',
-      governorate: 'محافظة سوهاج',
-      currentEmployee: 'كاتب صحة سفلاق',
-    },
-    stocks: {
-      birth_certificates: {
-        id: 'birth_certificates',
-        name: 'شهادات الميلاد الورقية الرسمية',
-        category: 'birth',
-        currentStock: 0,
-        totalReceived: 0,
-        totalDispensed: 0,
-        damagedOrCancelled: 0,
-        openingStock: 0,
-        openingSerialFrom: '',
-        openingSerialTo: '',
-        minThreshold: 30,
-        unit: 'شهادة / استمارة',
-        lastUpdated: now,
-      },
-      birth_notifications: {
-        id: 'birth_notifications',
-        name: 'بلاغات الميلاد (إخطار تبليغ)',
-        category: 'birth',
-        currentStock: 0,
-        totalReceived: 0,
-        totalDispensed: 0,
-        damagedOrCancelled: 0,
-        openingStock: 0,
-        openingSerialFrom: '',
-        openingSerialTo: '',
-        minThreshold: 30,
-        unit: 'أصل بلاغ',
-        lastUpdated: now,
-      },
-      death_certificates: {
-        id: 'death_certificates',
-        name: 'شهادات الوفاة الورقية الرسمية',
-        category: 'death',
-        currentStock: 0,
-        totalReceived: 0,
-        totalDispensed: 0,
-        damagedOrCancelled: 0,
-        openingStock: 0,
-        openingSerialFrom: '',
-        openingSerialTo: '',
-        minThreshold: 20,
-        unit: 'شهادة / استمارة',
-        lastUpdated: now,
-      },
-      death_notifications: {
-        id: 'death_notifications',
-        name: 'بلاغات الوفاة (إخطار تبليغ)',
-        category: 'death',
-        currentStock: 0,
-        totalReceived: 0,
-        totalDispensed: 0,
-        damagedOrCancelled: 0,
-        openingStock: 0,
-        openingSerialFrom: '',
-        openingSerialTo: '',
-        minThreshold: 20,
-        unit: 'أصل بلاغ',
-        lastUpdated: now,
-      },
-      health_cards_male: {
-        id: 'health_cards_male',
-        name: 'بطاقات صحية ذكور (تطعيمات ورعاية)',
-        category: 'health_card',
-        currentStock: 0,
-        totalReceived: 0,
-        totalDispensed: 0,
-        damagedOrCancelled: 0,
-        openingStock: 0,
-        openingSerialFrom: '',
-        openingSerialTo: '',
-        minThreshold: 25,
-        unit: 'بطاقة',
-        lastUpdated: now,
-      },
-      health_cards_female: {
-        id: 'health_cards_female',
-        name: 'بطاقات صحية إناث (تطعيمات ورعاية)',
-        category: 'health_card',
-        currentStock: 0,
-        totalReceived: 0,
-        totalDispensed: 0,
-        damagedOrCancelled: 0,
-        openingStock: 0,
-        openingSerialFrom: '',
-        openingSerialTo: '',
-        minThreshold: 25,
-        unit: 'بطاقة',
-        lastUpdated: now,
-      },
-      late_reg_under_year: {
-        id: 'late_reg_under_year',
-        name: 'استمارات ساقط قيد (أقل من عام)',
-        category: 'late_registration',
-        currentStock: 0,
-        totalReceived: 0,
-        totalDispensed: 0,
-        damagedOrCancelled: 0,
-        openingStock: 0,
-        openingSerialFrom: '',
-        openingSerialTo: '',
-        minThreshold: 15,
-        unit: 'استمارة / نموذج',
-        lastUpdated: now,
-      },
-      late_reg_over_year: {
-        id: 'late_reg_over_year',
-        name: 'استمارات ساقط قيد (أكبر من عام)',
-        category: 'late_registration',
-        currentStock: 0,
-        totalReceived: 0,
-        totalDispensed: 0,
-        damagedOrCancelled: 0,
-        openingStock: 0,
-        openingSerialFrom: '',
-        openingSerialTo: '',
-        minThreshold: 15,
-        unit: 'استمارة / نموذج',
-        lastUpdated: now,
-      },
-    },
-    openingBalances: {
-      asOfDate: new Date().toISOString().split('T')[0],
-      minuteNumber: '',
-      inventoryKeeper: 'كاتب صحة سفلاق',
-      committeeLeader: '',
-      committeeMember: '',
-      officeManager: '',
-      notes: 'رصيد صفري نظيف',
-      createdAt: now,
-      updatedAt: now,
-      items: {
-        birth_certificates: { stockCategory: 'birth_certificates', openingQuantity: 0, serialFrom: '', serialTo: '' },
-        birth_notifications: { stockCategory: 'birth_notifications', openingQuantity: 0, serialFrom: '', serialTo: '' },
-        death_certificates: { stockCategory: 'death_certificates', openingQuantity: 0, serialFrom: '', serialTo: '' },
-        death_notifications: { stockCategory: 'death_notifications', openingQuantity: 0, serialFrom: '', serialTo: '' },
-        health_cards_male: { stockCategory: 'health_cards_male', openingQuantity: 0, serialFrom: '', serialTo: '' },
-        health_cards_female: { stockCategory: 'health_cards_female', openingQuantity: 0, serialFrom: '', serialTo: '' },
-        late_reg_under_year: { stockCategory: 'late_reg_under_year', openingQuantity: 0, serialFrom: '', serialTo: '' },
-        late_reg_over_year: { stockCategory: 'late_reg_over_year', openingQuantity: 0, serialFrom: '', serialTo: '' },
-      },
-    },
-    supplyTransactions: [],
-    dispenseRecords: [],
-    lateRegistrations: [],
-  };
-}
-
 export interface FactoryResetOptions {
   resetBy?: string;
   reason?: string;
@@ -1867,7 +1453,6 @@ export async function performFactoryReset(
         const response = await fetch('/api/factory-reset', {
           method: 'POST',
           headers: getApiAuthHeaders({
-            adminSecretKey: options?.adminSecretKey,
             extraHeaders: { 'Cache-Control': 'no-cache' },
           }),
           body: JSON.stringify({
@@ -1875,7 +1460,6 @@ export async function performFactoryReset(
             clientDatabase: cleanDb,
             deviceId: getOrCreateDeviceId(),
             reason: options?.reason,
-            adminSecretKey: options?.adminSecretKey,
           }),
         });
 
@@ -1885,9 +1469,6 @@ export async function performFactoryReset(
         } else {
           const errData = await response.json().catch(() => ({}));
           console.warn('[Factory Reset] Server returned status:', response.status, errData);
-          if (response.status === 401) {
-            throw new Error(errData.message || 'غير مصرح بتنفيذ العمليات الحرجة والتدميرية: كلمة المرور السرية للإدارة غير صحيحة (Unauthorized)');
-          }
         }
       } else {
         console.log('[Factory Reset] Offline mode: Server wipe deferred until reconnection.');
@@ -1965,8 +1546,7 @@ export function resetToCleanDatabase(): AppDatabase {
 }
 
 export function resetToDemoDatabase(): AppDatabase {
-  saveDatabase(INITIAL_DATABASE);
-  return INITIAL_DATABASE;
+  return resetToCleanDatabase();
 }
 
 export { verifyDispenseCrudIntegrity } from './dispenseIntegrityVerification';

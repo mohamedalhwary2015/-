@@ -133,10 +133,7 @@ function simulateUpdateDispense(
 
       if (delta !== 0 && nextDb.stocks[cat]) {
         nextDb.stocks[cat].currentStock -= delta;
-        nextDb.stocks[cat].totalDispensed = Math.max(
-          0,
-          (nextDb.stocks[cat].totalDispensed || 0) + delta
-        );
+        nextDb.stocks[cat].totalDispensed = (nextDb.stocks[cat].totalDispensed || 0) + delta;
       }
     });
   }
@@ -189,10 +186,8 @@ function simulateDeleteDispense(db: TestDatabase, id: string): TestDatabase {
     targetRecord.itemsDeducted.forEach((it) => {
       if (nextDb.stocks[it.stockCategory]) {
         nextDb.stocks[it.stockCategory].currentStock += it.quantity;
-        nextDb.stocks[it.stockCategory].totalDispensed = Math.max(
-          0,
-          (nextDb.stocks[it.stockCategory].totalDispensed || 0) - it.quantity
-        );
+        nextDb.stocks[it.stockCategory].totalDispensed =
+          (nextDb.stocks[it.stockCategory].totalDispensed || 0) - it.quantity;
       }
     });
   }

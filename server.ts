@@ -10,9 +10,7 @@ const BACKUPS_DIR = path.join(DATA_DIR, 'backups');
 const DB_FILE = path.join(DATA_DIR, 'database.json');
 const PROCESSED_TX_FILE = path.join(DATA_DIR, 'processedTransactions.json');
 
-// Security & Authentication Configuration (loaded securely from .env)
-const API_ACCESS_TOKEN = process.env.API_ACCESS_TOKEN || 'cf99d9294e9dc401678d10c1ef05322a7baa18961e611b1b996d23ae0b669171';
-const ADMIN_SECRET_KEY = process.env.ADMIN_SECRET_KEY || '5261d093f9a4f1effea7eda41c75d5b19181d2261029d6645f6c80b972037ef6';
+// Trusted Internal Network (no token overhead)
 
 // Ensure storage directories exist
 if (!fs.existsSync(DATA_DIR)) {
@@ -340,53 +338,7 @@ async function startServer() {
     next();
   });
 
-  // 0. API Authentication Middleware for all /api/* routes
-  // Protects citizen data, medical records, and inventory transactions from unauthorized access
-  app.use('/api', (req, res, next) => {
-    // Exempt /health endpoint so basic health/liveness probes function without credential overhead
-    if (req.path === '/health') {
-      return next();
-    }
-
-    const authHeader = req.headers['authorization'];
-    const apiKeyHeader = req.headers['x-api-key'];
-
-    let providedToken = '';
-    if (authHeader && typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-      providedToken = authHeader.substring(7).trim();
-    } else if (apiKeyHeader && typeof apiKeyHeader === 'string') {
-      providedToken = apiKeyHeader.trim();
-    }
-
-    if (!providedToken || providedToken !== API_ACCESS_TOKEN) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized',
-        message: 'غير مصرح: مفتاح التحقق مفقود أو غير صحيح (Unauthorized)',
-      });
-    }
-
-    next();
-  });
-
-  // Strict Authentication Guard for Destructive Endpoints (/api/factory-reset and /api/repair/apply)
-  function verifyDestructiveAdminAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
-    const adminKeyHeader = req.headers['x-admin-key'];
-    const bodyKey = req.body?.adminSecretKey;
-    const providedAdminKey =
-      (typeof adminKeyHeader === 'string' ? adminKeyHeader.trim() : '') ||
-      (typeof bodyKey === 'string' ? bodyKey.trim() : '');
-
-    if (!providedAdminKey || providedAdminKey !== ADMIN_SECRET_KEY) {
-      return res.status(401).json({
-        success: false,
-        error: 'Unauthorized',
-        message: 'غير مصرح بتنفيذ العمليات الحرجة والتدميرية: كلمة المرور السرية للإدارة غير صحيحة (Unauthorized)',
-      });
-    }
-
-    next();
-  }
+  // 0. Trusted internal network: all API endpoints available without token overhead
 
   // 1. Health check endpoint
   app.get('/api/health', (req, res) => {
@@ -708,7 +660,7 @@ async function startServer() {
                     } else {
                       const restoreQty = Math.abs(diff);
                       db.stocks[cat].currentStock = (db.stocks[cat].currentStock || 0) + restoreQty;
-                      db.stocks[cat].totalDispensed = Math.max(0, (db.stocks[cat].totalDispensed || 0) - restoreQty);
+                      db.stocks[cat].totalDispensed = (db.stocks[cat].totalDispensed || 0) - restoreQty;
                     }
                     db.stocks[cat].lastUpdated = now;
                   }
@@ -828,7 +780,7 @@ async function startServer() {
                 const stock = db.stocks[it.stockCategory];
                 if (stock) {
                   stock.currentStock = (stock.currentStock || 0) + Number(it.quantity || 0);
-                  stock.totalDispensed = Math.max(0, (stock.totalDispensed || 0) - Number(it.quantity || 0));
+                  stock.totalDispensed = (stock.totalDispensed || 0) - Number(it.quantity || 0);
                   stock.lastUpdated = now;
                 }
               });
@@ -840,7 +792,7 @@ async function startServer() {
               const stock = db.stocks[it.stockCategory];
               if (stock) {
                 stock.currentStock = (stock.currentStock || 0) + Number(it.quantity || 0);
-                stock.totalDispensed = Math.max(0, (stock.totalDispensed || 0) - Number(it.quantity || 0));
+                stock.totalDispensed = (stock.totalDispensed || 0) - Number(it.quantity || 0);
                 stock.lastUpdated = now;
               }
             });
@@ -1049,7 +1001,7 @@ async function startServer() {
 
           if (catDeducted && db.stocks[catDeducted]) {
             db.stocks[catDeducted].currentStock = Number(db.stocks[catDeducted].currentStock || 0) - qtyDeducted;
-            db.stocks[catDeducted].totalReceived = Math.max(0, (db.stocks[catDeducted].totalReceived || 0) - qtyDeducted);
+            db.stocks[catDeducted].totalReceived = (db.stocks[catDeducted].totalReceived || 0) - qtyDeducted;
             db.stocks[catDeducted].lastUpdated = now;
 
             if (db.stocks[catDeducted].currentStock < 0) {
@@ -1236,7 +1188,7 @@ async function startServer() {
                 record.ageCategory === 'under_one_year' ? 'late_reg_under_year' : 'late_reg_over_year';
               if (db.stocks[stockCat]) {
                 db.stocks[stockCat].currentStock += 1;
-                db.stocks[stockCat].totalDispensed = Math.max(0, (db.stocks[stockCat].totalDispensed || 0) - 1);
+                db.stocks[stockCat].totalDispensed = (db.stocks[stockCat].totalDispensed || 0) - 1;
                 db.stocks[stockCat].lastUpdated = now;
               }
             }
@@ -1423,7 +1375,7 @@ async function startServer() {
 
   // 7. Apply Audited Production Repair (POST /api/repair/apply)
   // Non-destructive: takes immutable backup first, writes report file, and atomically updates clean state
-  app.post('/api/repair/apply', verifyDestructiveAdminAuth, (req, res) => {
+  app.post('/api/repair/apply', (req, res) => {
     try {
       const { database: cleanDb, reportMarkdown, removedCount, deviceId } = req.body;
       if (!cleanDb || typeof cleanDb !== 'object') {
@@ -1492,7 +1444,7 @@ async function startServer() {
   // 8. Radical Production Factory Reset Endpoint (POST /api/factory-reset)
   // Takes an immutable pre-reset backup first, wipes operational collections atomically,
   // resets all stock balances to zero, clears transaction idempotency registry, and sets Reset Boundary.
-  app.post('/api/factory-reset', verifyDestructiveAdminAuth, (req, res) => {
+  app.post('/api/factory-reset', (req, res) => {
     try {
       const { resetBoundary, clientDatabase, deviceId } = req.body;
       if (!resetBoundary || !resetBoundary.resetId) {

@@ -8,7 +8,6 @@ import {
   INITIAL_DATABASE, 
   saveDatabase,
   resetToCleanDatabase,
-  resetToDemoDatabase,
   performFactoryReset,
   FactoryResetVerificationReport
 } from '../storage/db';
@@ -243,14 +242,6 @@ export const BackupRestoreScreen: React.FC<BackupRestoreScreenProps> = ({
     } finally {
       setIsResetting(false);
     }
-  };
-
-  // 2. Demo Data Reset (Restores sample records for testing)
-  const handleDemoReset = () => {
-    const demoDb = resetToDemoDatabase();
-    onDatabaseUpdate(demoDb);
-    setShowCleanResetModal(false);
-    setRestoreSuccessMessage('تمت استعادة البيانات التوضيحية التجريبية (Demo Data) بنجاح.');
   };
 
   // Batch launcher for offline Windows EXE-like run
@@ -967,13 +958,6 @@ exit
             >
               <RotateCcw className="w-3.5 h-3.5" />
               <span>تصفير شامل وإعادة ضبط المصنع</span>
-            </button>
-            <button
-              onClick={handleDemoReset}
-              className="text-xs font-semibold text-slate-500 hover:text-slate-800 underline cursor-pointer"
-              title="استرجاع نماذج تجريبية للاختبار"
-            >
-              استرجاع بيانات تجريبية (Demo)
             </button>
           </div>
         </div>

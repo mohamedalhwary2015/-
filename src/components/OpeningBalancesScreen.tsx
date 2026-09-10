@@ -659,7 +659,7 @@ export const OpeningBalancesScreen: React.FC<OpeningBalancesScreenProps> = ({
                 // Preview current stock after mode
                 const previewStock = updateMode === 'override_current'
                   ? item.openingQuantity
-                  : Math.max(0, (item.openingQuantity || 0) + (stock?.totalReceived || 0) - (stock?.totalDispensed || 0) - (stock?.damagedOrCancelled || 0));
+                  : ((item.openingQuantity || 0) + (stock?.totalReceived || 0) - (stock?.totalDispensed || 0) - (stock?.damagedOrCancelled || 0));
 
                 return (
                   <tr key={cat} className="hover:bg-slate-50/80 transition">
