@@ -256,8 +256,8 @@ export const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
         .filter((s) => s.stockCategory === cat)
         .reduce((sum, s) => sum + s.quantity, 0);
 
-      // Estimated starting stock for the month
-      const startingStock = Math.max(0, currentStock + dispensedThisMonth - receivedThisMonth);
+      // Accurate starting stock for the month
+      const startingStock = currentStock + dispensedThisMonth - receivedThisMonth;
 
       const isLowStock = currentStock <= minThreshold;
 

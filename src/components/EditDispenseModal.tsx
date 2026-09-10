@@ -286,7 +286,7 @@ export const EditDispenseModal: React.FC<EditDispenseModalProps> = ({
 
             <div>
               <label className="block font-bold text-slate-700 mb-1">
-                المبلغ المحصل / المورّد (ج.م)
+                المبلغ الذي تم توريده (ج.م)
               </label>
               <div className="relative">
                 <DollarSign className="w-4 h-4 text-emerald-600 absolute right-3 top-3" />

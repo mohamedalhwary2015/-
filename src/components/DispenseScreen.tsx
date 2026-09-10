@@ -617,7 +617,7 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
                     type="text"
                     required
                     id="beneficiary-name-input"
-                    placeholder="مثال: أحمد محمود علي عبد الرحيم (اسم المواطن / المستلم)"
+                    placeholder="مثال: الاسم الرباعي للمواطن / المستلم"
                     value={beneficiaryName}
                     onChange={(e) => setBeneficiaryName(e.target.value)}
                     className="w-full pr-9 pl-3 py-2 rounded-xl border border-slate-300 focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600 text-slate-900 font-bold"
@@ -733,7 +733,7 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
               >
                 <div className="flex items-center justify-between mb-1">
                   <label className="block font-bold text-slate-900">
-                    المبلغ الذي تم توريده للخزينة (ج.م) {isHealthCardSelected ? '(إلزامي للبطاقة الصحية)' : '(إن وجد)'}
+                    المبلغ الذي تم توريده (ج.م) {isHealthCardSelected ? '(خاص بالبطاقة الصحية)' : '(إن وجد)'}
                   </label>
                   {isHealthCardSelected ? (
                     <span className="text-[11px] font-bold text-blue-800 bg-blue-100 px-2 py-0.5 rounded border border-blue-200">

@@ -603,9 +603,14 @@ export async function flushSyncQueue(currentDb: AppDatabase): Promise<{
       }
     }
 
-    // Update local database stocks with server-approved source of truth
-    if (resData.approvedStocks) {
-      currentDb.stocks = resData.approvedStocks;
+    // Update local database stocks with server-approved source of truth, preserving local stock authority
+    if (resData.approvedStocks && currentDb.stocks) {
+      for (const [key, srvStock] of Object.entries(resData.approvedStocks) as [string, any][]) {
+        if (currentDb.stocks[key]) {
+          // If server stock matches or has updated sync timestamps, update metadata without blind overwrite
+          currentDb.stocks[key].lastUpdated = srvStock.lastUpdated || new Date().toISOString();
+        }
+      }
     }
 
     // Mark processed records as synced locally

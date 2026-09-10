@@ -827,28 +827,42 @@ export interface DatabaseIntegrityReport {
   isValid: boolean;
   timestamp: string;
   duplicateTransactions: { id: string; type: string; count: number }[];
+  duplicateOperationKeys: { key: string; count: number }[];
   orphanedRecords: { id: string; type: string; reason: string }[];
   bogusOrDemoRecords: { id: string; type: string; reason: string }[];
   stockDiscrepancies: { category: StockCategory; expectedStock: number; storedStock: number; diff: number }[];
   preResetGhostRecords: { id: string; type: string; date: string }[];
+  negativeStockIssues: { category: string; currentStock: number }[];
+  negativeQuantityIssues: { id: string; type: string; quantity: number }[];
+  missingCategoryIssues: { id: string; type: string }[];
+  missingDispenseTypeIssues: { id: string }[];
+  snapshotPollutionIssues: { id: string; reason: string }[];
   issuesSummary: string[];
 }
 
 /**
  * Deep integrity validation to detect duplicates, test records, ghost records, and stock discrepancies.
+ * Note: Non-destructive — strictly audits without modifying the underlying database.
  */
 export function validateDatabaseIntegrity(db: AppDatabase): DatabaseIntegrityReport {
   const timestamp = new Date().toISOString();
   const duplicateTransactions: { id: string; type: string; count: number }[] = [];
+  const duplicateOperationKeys: { key: string; count: number }[] = [];
   const orphanedRecords: { id: string; type: string; reason: string }[] = [];
   const bogusOrDemoRecords: { id: string; type: string; reason: string }[] = [];
   const stockDiscrepancies: { category: StockCategory; expectedStock: number; storedStock: number; diff: number }[] = [];
   const preResetGhostRecords: { id: string; type: string; date: string }[] = [];
+  const negativeStockIssues: { category: string; currentStock: number }[] = [];
+  const negativeQuantityIssues: { id: string; type: string; quantity: number }[] = [];
+  const missingCategoryIssues: { id: string; type: string }[] = [];
+  const missingDispenseTypeIssues: { id: string }[] = [];
+  const snapshotPollutionIssues: { id: string; reason: string }[] = [];
   const issuesSummary: string[] = [];
 
   const boundaryTime = db.resetBoundary ? new Date(db.resetBoundary.resetAt).getTime() : 0;
+  const operationKeyCounts = new Map<string, number>();
 
-  // 1. Check duplicate and test supply transactions
+  // 1. Check supply transactions
   const supplyIdCounts = new Map<string, number>();
   (db.supplyTransactions || []).forEach((s) => {
     const key = s.transactionId || s.id;
@@ -856,6 +870,22 @@ export function validateDatabaseIntegrity(db: AppDatabase): DatabaseIntegrityRep
 
     if (isKnownDemoOrSeedTransaction(s.id, s.documentNumber)) {
       bogusOrDemoRecords.push({ id: s.id, type: 'supply', reason: 'معرف أو مستند تجريبي وهمي' });
+    }
+
+    if (s.id && (s.id.startsWith('snap-') || s.id.startsWith('snapshot-'))) {
+      snapshotPollutionIssues.push({ id: s.id, reason: 'معرف لقطة احتياطية مدمج كحركة توريد' });
+    }
+
+    if (!s.stockCategory) {
+      missingCategoryIssues.push({ id: s.id, type: 'supply' });
+    }
+
+    if (Number(s.quantity) < 0) {
+      negativeQuantityIssues.push({ id: s.id, type: 'supply', quantity: s.quantity });
+    }
+
+    if (!s.documentNumber && !s.notes && !s.receivedBy) {
+      orphanedRecords.push({ id: s.id, type: 'supply', reason: 'حركة توريد بدون مستند أو مستلم' });
     }
 
     if (boundaryTime > 0) {
@@ -872,7 +902,7 @@ export function validateDatabaseIntegrity(db: AppDatabase): DatabaseIntegrityRep
     }
   });
 
-  // 2. Check duplicate and test dispense records
+  // 2. Check dispense records
   const dispenseIdCounts = new Map<string, number>();
   (db.dispenseRecords || []).forEach((d) => {
     const key = d.transactionId || d.id;
@@ -880,6 +910,31 @@ export function validateDatabaseIntegrity(db: AppDatabase): DatabaseIntegrityRep
 
     if (isKnownDemoOrSeedTransaction(d.id, d.certificateNumber || d.notificationNumber)) {
       bogusOrDemoRecords.push({ id: d.id, type: 'dispense', reason: 'معرف أو شهادة تجريبية وهمية' });
+    }
+
+    if (d.id && (d.id.startsWith('snap-') || d.id.startsWith('snapshot-'))) {
+      snapshotPollutionIssues.push({ id: d.id, reason: 'معرف لقطة احتياطية مدمج كحركة صرف' });
+    }
+
+    if (!d.dispenseType) {
+      missingDispenseTypeIssues.push({ id: d.id });
+    }
+
+    if (!d.beneficiaryName || !d.beneficiaryName.trim()) {
+      orphanedRecords.push({ id: d.id, type: 'dispense', reason: 'حركة صرف بدون اسم مستفيد' });
+    }
+
+    if (!d.itemsDeducted || d.itemsDeducted.length === 0) {
+      missingCategoryIssues.push({ id: d.id, type: 'dispense' });
+    } else {
+      d.itemsDeducted.forEach((it) => {
+        if (!it.stockCategory) {
+          missingCategoryIssues.push({ id: d.id, type: 'dispense_item' });
+        }
+        if (Number(it.quantity) < 0) {
+          negativeQuantityIssues.push({ id: d.id, type: 'dispense', quantity: it.quantity });
+        }
+      });
     }
 
     if (boundaryTime > 0) {
@@ -896,7 +951,7 @@ export function validateDatabaseIntegrity(db: AppDatabase): DatabaseIntegrityRep
     }
   });
 
-  // 3. Check duplicate and test late registrations
+  // 3. Check late registrations
   const lateRegIdCounts = new Map<string, number>();
   (db.lateRegistrations || []).forEach((l) => {
     const key = l.transactionId || l.id;
@@ -920,12 +975,28 @@ export function validateDatabaseIntegrity(db: AppDatabase): DatabaseIntegrityRep
     }
   });
 
-  // 4. Verify stock arithmetic consistency
+  // 4. Check tombstones for duplicate operationKeys
+  (db.syncTombstones || []).forEach((t) => {
+    if (t.operationKey) {
+      operationKeyCounts.set(t.operationKey, (operationKeyCounts.get(t.operationKey) || 0) + 1);
+    }
+  });
+  operationKeyCounts.forEach((count, key) => {
+    if (count > 1) {
+      duplicateOperationKeys.push({ key, count });
+    }
+  });
+
+  // 5. Verify stock balances and negative balances
   if (db.stocks) {
     const allCats = Object.keys(STOCK_CATEGORIES_INFO) as StockCategory[];
     allCats.forEach((cat) => {
       const stock = db.stocks?.[cat];
       if (!stock) return;
+
+      if (stock.currentStock < 0) {
+        negativeStockIssues.push({ category: cat, currentStock: stock.currentStock });
+      }
 
       const openingQty =
         db.openingBalances?.items?.[cat]?.openingQuantity !== undefined
@@ -963,6 +1034,9 @@ export function validateDatabaseIntegrity(db: AppDatabase): DatabaseIntegrityRep
   if (duplicateTransactions.length > 0) {
     issuesSummary.push(`تم اكتشاف ${duplicateTransactions.length} حركة مكررة.`);
   }
+  if (duplicateOperationKeys.length > 0) {
+    issuesSummary.push(`تم اكتشاف ${duplicateOperationKeys.length} مفتاح عملية مكرر.`);
+  }
   if (bogusOrDemoRecords.length > 0) {
     issuesSummary.push(`تم اكتشاف ${bogusOrDemoRecords.length} سجل تجريبي وهمي.`);
   }
@@ -972,21 +1046,52 @@ export function validateDatabaseIntegrity(db: AppDatabase): DatabaseIntegrityRep
   if (stockDiscrepancies.length > 0) {
     issuesSummary.push(`تم اكتشاف ${stockDiscrepancies.length} انحراف رياضي في أرصدة الأصناف.`);
   }
+  if (negativeStockIssues.length > 0) {
+    issuesSummary.push(`تم اكتشاف ${negativeStockIssues.length} صنف برصيد سالب.`);
+  }
+  if (negativeQuantityIssues.length > 0) {
+    issuesSummary.push(`تم اكتشاف ${negativeQuantityIssues.length} حركة بكمية سالبة.`);
+  }
+  if (missingCategoryIssues.length > 0) {
+    issuesSummary.push(`تم اكتشاف ${missingCategoryIssues.length} حركة بدون صنف.`);
+  }
+  if (missingDispenseTypeIssues.length > 0) {
+    issuesSummary.push(`تم اكتشاف ${missingDispenseTypeIssues.length} حركة صرف بدون نوع معاملة.`);
+  }
+  if (snapshotPollutionIssues.length > 0) {
+    issuesSummary.push(`تم اكتشاف ${snapshotPollutionIssues.length} سجل لقطة مدمج بالخطأ في قاعدة البيانات.`);
+  }
+  if (orphanedRecords.length > 0) {
+    issuesSummary.push(`تم اكتشاف ${orphanedRecords.length} حركة غير مكتملة أو غير مرتبطة.`);
+  }
 
   const isValid =
     duplicateTransactions.length === 0 &&
+    duplicateOperationKeys.length === 0 &&
     bogusOrDemoRecords.length === 0 &&
     preResetGhostRecords.length === 0 &&
-    stockDiscrepancies.length === 0;
+    stockDiscrepancies.length === 0 &&
+    negativeStockIssues.length === 0 &&
+    negativeQuantityIssues.length === 0 &&
+    missingCategoryIssues.length === 0 &&
+    missingDispenseTypeIssues.length === 0 &&
+    snapshotPollutionIssues.length === 0 &&
+    orphanedRecords.length === 0;
 
   return {
     isValid,
     timestamp,
     duplicateTransactions,
+    duplicateOperationKeys,
     orphanedRecords,
     bogusOrDemoRecords,
     stockDiscrepancies,
     preResetGhostRecords,
+    negativeStockIssues,
+    negativeQuantityIssues,
+    missingCategoryIssues,
+    missingDispenseTypeIssues,
+    snapshotPollutionIssues,
     issuesSummary,
   };
 }

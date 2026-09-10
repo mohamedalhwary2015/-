@@ -40,7 +40,7 @@ export const OpeningBalancesScreen: React.FC<OpeningBalancesScreenProps> = ({
   const [asOfDate, setAsOfDate] = useState<string>(existingOpening?.asOfDate || '2026-01-01');
   const [minuteNumber, setMinuteNumber] = useState<string>(existingOpening?.minuteNumber || 'محضر جرد عهدة رقم 1 لسنة 2026');
   const [inventoryKeeper, setInventoryKeeper] = useState<string>(
-    existingOpening?.inventoryKeeper || db.officeSettings.currentEmployee || 'أحمد محمود (كاتب صحة سفلاق)'
+    existingOpening?.inventoryKeeper || db.officeSettings.currentEmployee || 'غير محدد'
   );
   const [committeeLeader, setCommitteeLeader] = useState<string>(
     existingOpening?.committeeLeader || 'د. مفتش صحة سفلاق'

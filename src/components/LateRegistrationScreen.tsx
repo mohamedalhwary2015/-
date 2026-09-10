@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { AppDatabase, LateRegistrationRecord, LateRegStatus, LateRegType } from '../types';
 import { addLateRegistration, updateLateRegistration, deleteLateRegistration, trackLateRegistrationStatus } from '../storage/db';
 import { LateRegTrackerModal } from './LateRegTrackerModal';
@@ -72,6 +72,19 @@ export const LateRegistrationScreen: React.FC<LateRegistrationScreenProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [ageCategoryFilter, setAgeCategoryFilter] = useState<string>('all');
+  const [monthFilter, setMonthFilter] = useState<string>('all');
+
+  const availableMonths = useMemo(() => {
+    const set = new Set<string>();
+    (db.lateRegistrations || []).forEach((r) => {
+      if (r.submissionDate && r.submissionDate.length >= 7) {
+        set.add(r.submissionDate.substring(0, 7));
+      }
+    });
+    const currentMonth = new Date().toISOString().substring(0, 7);
+    set.add(currentMonth);
+    return Array.from(set).sort().reverse();
+  }, [db.lateRegistrations]);
 
   // Auto-generate a suggested form number
   const openNewForm = () => {
@@ -246,7 +259,8 @@ export const LateRegistrationScreen: React.FC<LateRegistrationScreenProps> = ({
 
     const matchesStatus = statusFilter === 'all' || r.status === statusFilter;
     const matchesAge = ageCategoryFilter === 'all' || (r.ageCategory || 'under_one_year') === ageCategoryFilter;
-    return matchesSearch && matchesStatus && matchesAge;
+    const matchesMonth = monthFilter === 'all' || (r.submissionDate && r.submissionDate.startsWith(monthFilter));
+    return matchesSearch && matchesStatus && matchesAge && matchesMonth;
   });
 
   const handleUpdateTrackingStatus = (

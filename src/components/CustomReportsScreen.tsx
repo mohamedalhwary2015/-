@@ -1095,7 +1095,7 @@ export const CustomReportsScreen: React.FC<CustomReportsScreenProps> = ({
               <div className="pt-6 border-t border-slate-300 grid grid-cols-3 text-center text-xs font-bold gap-4">
                 <div className="space-y-6">
                   <p>كاتب صحة سفلاق</p>
-                  <p className="font-normal text-slate-600">أحمد محمود عبد العال</p>
+                  <p className="font-normal text-slate-600">{db.officeSettings.currentEmployee || 'غير محدد'}</p>
                   <p className="pt-2 border-t border-dashed border-slate-400">التوقيع: .....................</p>
                 </div>
 

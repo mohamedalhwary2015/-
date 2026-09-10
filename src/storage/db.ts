@@ -334,7 +334,7 @@ export function addSupplyTransaction(
     operationKey: `SUPPLY:${supply.id}:${syncId}`,
     transactionId: txId,
     deviceId: devId,
-    userId: supply.receivedBy || 'أحمد محمود',
+    userId: supply.receivedBy || 'غير محدد',
     operationType: 'SUPPLY',
     tableName: 'supplyTransactions',
     recordId: supply.id,
@@ -411,7 +411,7 @@ export function updateSupplyTransaction(
     operationKey: `UPDATE_SUPPLY:${updatedSupply.id}:${syncId}`,
     transactionId: updatedSupply.transactionId || `tx-${updatedSupply.id}`,
     deviceId: updatedSupply.deviceId || getOrCreateDeviceId(),
-    userId: employeeName || updatedSupply.receivedBy || 'أحمد محمود',
+    userId: employeeName || updatedSupply.receivedBy || 'غير محدد',
     operationType: 'UPDATE_SUPPLY',
     tableName: 'supplyTransactions',
     recordId: updatedSupply.id,
@@ -472,7 +472,7 @@ export function deleteSupplyTransaction(id: string, deletedBy?: string): AppData
     operationType: 'DELETE_SUPPLY',
     deletedAt: now,
     deviceId: tx.deviceId || getOrCreateDeviceId(),
-    deletedBy: deletedBy || 'أحمد محمود',
+    deletedBy: deletedBy || 'غير محدد',
     details: {
       documentNumber: tx.documentNumber,
       stockCategory: tx.stockCategory,
@@ -489,7 +489,7 @@ export function deleteSupplyTransaction(id: string, deletedBy?: string): AppData
     operationKey: `DELETE_SUPPLY:${tx.id}:${syncId}`,
     transactionId: tx.transactionId || `tx-${tx.id}`,
     deviceId: tx.deviceId || getOrCreateDeviceId(),
-    userId: tombstone.deletedBy || 'أحمد محمود',
+    userId: tombstone.deletedBy || 'غير محدد',
     operationType: 'DELETE_SUPPLY',
     tableName: 'supplyTransactions',
     recordId: tx.id,
@@ -553,7 +553,7 @@ export function addDispenseRecord(
     operationKey: `DISPENSE:${record.id}:${syncId}`,
     transactionId: txId,
     deviceId: devId,
-    userId: record.dispensedBy || 'أحمد محمود',
+    userId: record.dispensedBy || 'غير محدد',
     operationType: 'DISPENSE',
     tableName: 'dispenseRecords',
     recordId: record.id,
@@ -705,7 +705,7 @@ export function deleteDispenseRecord(id: string, deletedBy?: string): AppDatabas
     operationType: 'DELETE_DISPENSE',
     deletedAt: now,
     deviceId: devId,
-    deletedBy: deletedBy || 'كاتب صحة سفلاق',
+    deletedBy: deletedBy || 'غير محدد',
     itemsRestored: record.itemsDeducted,
     details: {
       beneficiaryName: record.beneficiaryName,
@@ -723,7 +723,7 @@ export function deleteDispenseRecord(id: string, deletedBy?: string): AppDatabas
     operationKey: `DELETE_DISPENSE:${record.id}:${syncId}`,
     transactionId: txId,
     deviceId: devId,
-    userId: tombstone.deletedBy || 'كاتب صحة سفلاق',
+    userId: tombstone.deletedBy || 'غير محدد',
     operationType: 'DELETE_DISPENSE',
     tableName: 'dispenseRecords',
     recordId: record.id,
@@ -746,6 +746,18 @@ export function addLateRegistration(
   deductStock: boolean = false
 ): { db: AppDatabase; record: LateRegistrationRecord } {
   const db = getDatabase();
+
+  // Validate unique formNumber
+  if (data.formNumber && data.formNumber.trim()) {
+    const cleanFormNumber = data.formNumber.trim();
+    const existing = db.lateRegistrations.find(
+      (l) => l.formNumber && l.formNumber.trim() === cleanFormNumber
+    );
+    if (existing) {
+      throw new Error(`رقم استمارة ساقط القيد (${cleanFormNumber}) مسجل مسبقاً في المنظومة باسم (${existing.citizenName}). لا يمكن تكرار رقم الاستمارة.`);
+    }
+  }
+
   const now = new Date().toISOString();
   const txId = (data as any).transactionId || generateGlobalTxId();
   const devId = (data as any).deviceId || getOrCreateDeviceId();
@@ -784,7 +796,7 @@ export function addLateRegistration(
     operationKey: `LATE_REG_ADD:${record.id}:${syncId}`,
     transactionId: txId,
     deviceId: devId,
-    userId: record.staffName || 'أحمد محمود',
+    userId: record.staffName || 'غير محدد',
     operationType: 'LATE_REG_ADD',
     tableName: 'lateRegistrations',
     recordId: record.id,
@@ -975,7 +987,7 @@ export function deleteLateRegistration(id: string, deletedBy?: string): AppDatab
     operationType: 'DELETE_LATE_REG',
     deletedAt: now,
     deviceId: devId,
-    deletedBy: deletedBy || 'أحمد محمود',
+    deletedBy: deletedBy || 'غير محدد',
     details: {
       personName: record.personName,
       formNumber: record.formNumber,
@@ -990,7 +1002,7 @@ export function deleteLateRegistration(id: string, deletedBy?: string): AppDatab
     operationKey: `DELETE_LATE_REG:${record.id}:${syncId}`,
     transactionId: txId,
     deviceId: devId,
-    userId: tombstone.deletedBy || 'أحمد محمود',
+    userId: tombstone.deletedBy || 'غير محدد',
     operationType: 'DELETE_LATE_REG',
     tableName: 'lateRegistrations',
     recordId: record.id,
