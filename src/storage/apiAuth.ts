@@ -1,14 +1,9 @@
 /**
  * طبقة الاتصال والترويسات لطلبات الخادم (Client API Communication Layer)
- * التطبيق يعمل داخل شبكة موثوقة لمكتب صحة سفلاق بدون متطلبات توكن أو كلمات مرور معقدة.
+ * التطبيق يعمل داخل شبكة موثوقة لمكتب صحة سفلاق بدون متطلبات توكن أو كلمات مرور.
  */
 
-export function getApiAccessToken(): string {
-  return '';
-}
-
 export interface ApiAuthHeaderOptions {
-  adminSecretKey?: string;
   extraHeaders?: Record<string, string>;
 }
 

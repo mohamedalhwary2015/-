@@ -67,13 +67,19 @@ export interface ProductionRepairReport {
 }
 
 /**
- * Checks if a transaction appears to be a mock / seed item from the initial template
+ * Checks if a transaction appears to be an explicit mock / test item
  */
 export function isKnownDemoOrSeedTransaction(id: string, docNum?: string): boolean {
-  const seedIds = ['sup-1', 'sup-2', 'sup-3', 'disp-1', 'disp-2', 'disp-3', 'disp-4', 'late-1', 'late-2'];
-  if (seedIds.includes(id)) return true;
-  if (docNum && (docNum.includes('إذن 44/2026 مديرية سوهاج') || docNum.includes('توريد رقم 118') || docNum.includes('توريد رقم 119'))) {
+  if (!id) return false;
+  const lowerId = id.toLowerCase();
+  if (lowerId.startsWith('mock-') || lowerId.startsWith('demo-') || lowerId === 'test-seed') {
     return true;
+  }
+  if (docNum) {
+    const lowerDoc = docNum.toLowerCase();
+    if (lowerDoc.includes('demo') || lowerDoc.includes('تجريبي') || lowerDoc.includes('عينة اختبار')) {
+      return true;
+    }
   }
   return false;
 }
@@ -580,8 +586,7 @@ export async function executeProductionRepair(
   offlineDb: AppDatabase,
   onlineDb: AppDatabase,
   auditReport: ProductionRepairReport,
-  excludedIds: Set<string>, // IDs explicitly approved for removal (only bogus/duplicates)
-  adminSecretKey?: string
+  excludedIds: Set<string> // IDs explicitly approved for removal (only bogus/duplicates)
 ): Promise<{
   success: boolean;
   cleanedDatabase: AppDatabase;
@@ -781,19 +786,18 @@ export async function executeProductionRepair(
   try {
     const res = await fetch('/api/repair/apply', {
       method: 'POST',
-      headers: getApiAuthHeaders({ adminSecretKey }),
+      headers: getApiAuthHeaders(),
       body: JSON.stringify({
         database: cleanedDb,
         reportMarkdown: auditReport.markdownReport,
         removedCount,
         deviceId: getOrCreateDeviceId(),
-        adminSecretKey,
       }),
     });
 
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.message || 'فشل الخادم في تطبيق التصحيح المعتمد: تأكد من صحة كلمة المرور السرية للإدارة');
+      throw new Error(errData.message || 'فشل الخادم في تطبيق التصحيح المعتمد');
     }
   } catch (err: any) {
     console.error('Server repair apply error:', err);

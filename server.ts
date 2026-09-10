@@ -383,7 +383,18 @@ async function startServer() {
     }
   });
 
-  // 2. Fetch central database (GET /api/sync)
+  // 2. Fetch central database (GET /api/sync & GET /api/database)
+  app.get('/api/database', (req, res) => {
+    let db = cachedDatabase;
+    if (!db) {
+      db = loadDatabaseFromDisk();
+    }
+    if (!db) {
+      return res.status(500).json({ success: false, message: 'Database not initialized on server' });
+    }
+    res.json(db);
+  });
+
   app.get('/api/sync', (req, res) => {
     let db = cachedDatabase;
     if (!db) {
@@ -532,7 +543,34 @@ async function startServer() {
               // Record already present: update metadata without double-deducting stock
               db.dispenseRecords[existingIdx] = { ...db.dispenseRecords[existingIdx], ...rec };
             } else {
-              // Deduct stock centrally according to standard rules without Math.max hiding deficits
+              // Step 1: Pre-verify sufficient stock for ALL deducted items atomically
+              let hasInsufficientStock = false;
+              let insMsg = '';
+              if (Array.isArray(rec.itemsDeducted)) {
+                for (const it of rec.itemsDeducted) {
+                  const stock = db.stocks[it.stockCategory];
+                  const deductQty = Number(it.quantity || 0);
+                  const currentStock = Number(stock?.currentStock || 0);
+                  if (currentStock < deductQty) {
+                    hasInsufficientStock = true;
+                    insMsg = `الرصيد غير كافٍ لتنفيذ العملية في صنف (${stock?.name || it.stockCategory}). الرصيد المتاح (${currentStock}) أقل من المطلوب (${deductQty}).`;
+                    break;
+                  }
+                }
+              }
+
+              if (hasInsufficientStock) {
+                results.push({
+                  syncId: item.syncId,
+                  transactionId: txId,
+                  operationKey: opKey,
+                  status: 'rejected',
+                  message: insMsg,
+                });
+                continue;
+              }
+
+              // Step 2: Deduct stock centrally
               if (Array.isArray(rec.itemsDeducted)) {
                 rec.itemsDeducted.forEach((it: any) => {
                   const stock = db.stocks[it.stockCategory];
@@ -541,29 +579,6 @@ async function startServer() {
                     stock.currentStock = Number(stock.currentStock || 0) - deductQty;
                     stock.totalDispensed = (stock.totalDispensed || 0) + deductQty;
                     stock.lastUpdated = now;
-
-                    // Automatically record CRITICAL IntegrityIssue if stock drops below zero
-                    if (stock.currentStock < 0) {
-                      if (!db.integrityIssues) db.integrityIssues = [];
-                      db.integrityIssues.push({
-                        id: `neg-balance-${it.stockCategory}-${rec.id || txId}-${Date.now()}`,
-                        type: 'CRITICAL',
-                        category: 'NEGATIVE_BALANCE',
-                        title: `عجز حقيقي ورصيد سالب في صنف: ${stock.name || it.stockCategory}`,
-                        description: `تمت مزامنة حركة صرف (${rec.id || txId}) بتاريخ (${rec.date || now}) أدت إلى عجز حقيقي في الرصيد ليصبح (${stock.currentStock}) بكمية منصرفة (${deductQty}).`,
-                        recordId: rec.id,
-                        transactionId: txId,
-                        stockCategory: it.stockCategory,
-                        details: {
-                          date: rec.date || now,
-                          affectedCategory: it.stockCategory,
-                          causingTransactionId: txId,
-                          causingRecordId: rec.id,
-                          quantityDispensed: deductQty,
-                          resultingStock: stock.currentStock,
-                        },
-                      });
-                    }
                   }
                 });
               }
@@ -626,42 +641,45 @@ async function startServer() {
                 });
 
                 const allCats = new Set([...Object.keys(oldTotals), ...Object.keys(newTotals)]);
+
+                // Step 1: Pre-verify sufficient stock for any increases
+                let insufficientCat = '';
+                let neededQty = 0;
+                let availableStock = 0;
+                for (const cat of allCats) {
+                  const oldQty = oldTotals[cat] || 0;
+                  const newQty = newTotals[cat] || 0;
+                  const diff = newQty - oldQty;
+                  if (diff > 0) {
+                    const currentStock = Number(db.stocks[cat]?.currentStock || 0);
+                    if (currentStock < diff) {
+                      insufficientCat = cat;
+                      neededQty = diff;
+                      availableStock = currentStock;
+                      break;
+                    }
+                  }
+                }
+
+                if (insufficientCat) {
+                  results.push({
+                    syncId: item.syncId,
+                    transactionId: txId,
+                    operationKey: opKey,
+                    status: 'rejected',
+                    message: `الرصيد غير كافٍ في صنف (${db.stocks[insufficientCat]?.name || insufficientCat}) لتعديل حركة الصرف. الرصيد الحالي (${availableStock}) أقل من الكمية الإضافية المطلوبة (${neededQty}).`,
+                  });
+                  continue;
+                }
+
+                // Step 2: Apply stock adjustments atomically
                 allCats.forEach((cat) => {
                   const oldQty = oldTotals[cat] || 0;
                   const newQty = newTotals[cat] || 0;
                   const diff = newQty - oldQty;
                   if (diff !== 0 && db.stocks[cat]) {
-                    if (diff > 0) {
-                      db.stocks[cat].currentStock = Number(db.stocks[cat].currentStock || 0) - diff;
-                      db.stocks[cat].totalDispensed = (db.stocks[cat].totalDispensed || 0) + diff;
-
-                      // Record CRITICAL IntegrityIssue if adjustment resulted in negative balance
-                      if (db.stocks[cat].currentStock < 0) {
-                        if (!db.integrityIssues) db.integrityIssues = [];
-                        db.integrityIssues.push({
-                          id: `neg-balance-update-${cat}-${targetId || targetTxId}-${Date.now()}`,
-                          type: 'CRITICAL',
-                          category: 'NEGATIVE_BALANCE',
-                          title: `عجز حقيقي ورصيد سالب في صنف: ${db.stocks[cat].name || cat}`,
-                          description: `تم تعديل حركة صرف (${targetId || targetTxId}) بفارق زيادة (${diff}) أدى إلى عجز حقيقي في الرصيد ليصبح (${db.stocks[cat].currentStock}).`,
-                          recordId: targetId,
-                          transactionId: targetTxId,
-                          stockCategory: cat,
-                          details: {
-                            date: updates.date || now,
-                            affectedCategory: cat,
-                            causingTransactionId: targetTxId,
-                            causingRecordId: targetId,
-                            deltaIncrease: diff,
-                            resultingStock: db.stocks[cat].currentStock,
-                          },
-                        });
-                      }
-                    } else {
-                      const restoreQty = Math.abs(diff);
-                      db.stocks[cat].currentStock = (db.stocks[cat].currentStock || 0) + restoreQty;
-                      db.stocks[cat].totalDispensed = (db.stocks[cat].totalDispensed || 0) - restoreQty;
-                    }
+                    db.stocks[cat].currentStock = Number(db.stocks[cat].currentStock || 0) - diff;
+                    db.stocks[cat].totalDispensed = (db.stocks[cat].totalDispensed || 0) + diff;
                     db.stocks[cat].lastUpdated = now;
                   }
                 });
@@ -688,7 +706,33 @@ async function startServer() {
                 message: 'تم تحديث حركة الصرف وتعديل الأرصدة بدقة',
               });
             } else {
-              // Record not on server yet: insert with stock deduction
+              // Record not on server yet: check stock before insert
+              let hasInsufficientStock = false;
+              let insMsg = '';
+              if (Array.isArray(updates.itemsDeducted)) {
+                for (const it of updates.itemsDeducted) {
+                  const stock = db.stocks[it.stockCategory];
+                  const qty = Number(it.quantity || 0);
+                  const curr = Number(stock?.currentStock || 0);
+                  if (curr < qty) {
+                    hasInsufficientStock = true;
+                    insMsg = `الرصيد غير كافٍ في صنف (${stock?.name || it.stockCategory}) لإضافة حركة الصرف. الرصيد المتاح (${curr}) والكمية المطلوبة (${qty}).`;
+                    break;
+                  }
+                }
+              }
+
+              if (hasInsufficientStock) {
+                results.push({
+                  syncId: item.syncId,
+                  transactionId: txId,
+                  operationKey: opKey,
+                  status: 'rejected',
+                  message: insMsg,
+                });
+                continue;
+              }
+
               const rec = {
                 ...updates,
                 id: targetId,
@@ -706,28 +750,6 @@ async function startServer() {
                     stock.currentStock = Number(stock.currentStock || 0) - deductQty;
                     stock.totalDispensed = (stock.totalDispensed || 0) + deductQty;
                     stock.lastUpdated = now;
-
-                    if (stock.currentStock < 0) {
-                      if (!db.integrityIssues) db.integrityIssues = [];
-                      db.integrityIssues.push({
-                        id: `neg-balance-rec-${it.stockCategory}-${rec.id || targetTxId}-${Date.now()}`,
-                        type: 'CRITICAL',
-                        category: 'NEGATIVE_BALANCE',
-                        title: `عجز حقيقي ورصيد سالب في صنف: ${stock.name || it.stockCategory}`,
-                        description: `تمت إضافة حركة صرف معدلة (${rec.id || targetTxId}) أدت إلى عجز حقيقي في الرصيد ليصبح (${stock.currentStock}) بكمية منصرفة (${deductQty}).`,
-                        recordId: rec.id,
-                        transactionId: targetTxId,
-                        stockCategory: it.stockCategory,
-                        details: {
-                          date: rec.date || now,
-                          affectedCategory: it.stockCategory,
-                          causingTransactionId: targetTxId,
-                          causingRecordId: rec.id,
-                          quantityDispensed: deductQty,
-                          resultingStock: stock.currentStock,
-                        },
-                      });
-                    }
                   }
                 });
               }
@@ -875,91 +897,152 @@ async function startServer() {
             });
           }
         } else if (item.operationType === 'UPDATE_SUPPLY') {
-          const updates = item.payload;
-          if (updates) {
-            const targetId = updates.id || item.recordId;
-            const targetTxId = updates.transactionId || txId;
+          const payload = item.payload || {};
+          const supplyObj = payload.supply || (payload.id ? payload : {});
+          const targetId = supplyObj.id || item.recordId || payload.recordId;
+          const targetTxId = supplyObj.transactionId || item.transactionId || txId;
 
-            // Check if tombstoned
-            if (
-              db.syncTombstones &&
-              db.syncTombstones.some(
-                (t: any) => t.recordId === targetId || (targetTxId && t.transactionId === targetTxId)
-              )
-            ) {
-              results.push({
-                syncId: item.syncId,
-                transactionId: txId,
-                operationKey: opKey,
-                status: 'ignored_tombstoned',
-                message: 'تم تجاهل تعديل التوريد لأنه محذوف مسبقاً (Tombstone)',
-              });
-              continue;
-            }
+          // Check if tombstoned
+          if (
+            db.syncTombstones &&
+            db.syncTombstones.some(
+              (t: any) => t.recordId === targetId || (targetTxId && t.transactionId === targetTxId)
+            )
+          ) {
+            results.push({
+              syncId: item.syncId,
+              transactionId: txId,
+              operationKey: opKey,
+              status: 'ignored_tombstoned',
+              message: 'تم تجاهل تعديل التوريد لأنه محذوف مسبقاً (Tombstone)',
+            });
+            continue;
+          }
 
-            const existingIdx = db.supplyTransactions.findIndex(
-              (s: any) => s.id === targetId || (targetTxId && s.transactionId === targetTxId)
-            );
+          const existingIdx = db.supplyTransactions.findIndex(
+            (s: any) => s.id === targetId || (targetTxId && s.transactionId === targetTxId)
+          );
+          const existing = existingIdx !== -1 ? db.supplyTransactions[existingIdx] : null;
 
-            if (existingIdx !== -1) {
-              const existing = db.supplyTransactions[existingIdx];
-              const oldQty = Number(existing.quantity || 0);
-              const newQty = Number(updates.quantity !== undefined ? updates.quantity : oldQty);
-              const qtyDiff = newQty - oldQty;
+          const oldCategory = payload.oldCategory || existing?.stockCategory || supplyObj.stockCategory;
+          const oldQuantity = Number(
+            payload.oldQuantity !== undefined
+              ? payload.oldQuantity
+              : existing?.quantity !== undefined
+              ? existing.quantity
+              : supplyObj.quantity || 0
+          );
+          const newCategory = payload.newCategory || supplyObj.stockCategory || oldCategory;
+          const newQuantity = Number(
+            payload.newQuantity !== undefined
+              ? payload.newQuantity
+              : supplyObj.quantity !== undefined
+              ? supplyObj.quantity
+              : oldQuantity
+          );
 
-              const targetCat = updates.stockCategory || existing.stockCategory;
-              if (targetCat && db.stocks[targetCat] && qtyDiff !== 0) {
-                db.stocks[targetCat].currentStock += qtyDiff;
-                db.stocks[targetCat].totalReceived = (db.stocks[targetCat].totalReceived || 0) + qtyDiff;
-                db.stocks[targetCat].lastUpdated = now;
+          if (existingIdx !== -1) {
+            // Case 1: Same category
+            if (oldCategory === newCategory) {
+              const delta = newQuantity - oldQuantity;
+              if (delta < 0) {
+                const reduction = Math.abs(delta);
+                const currentStock = Number(db.stocks[oldCategory]?.currentStock || 0);
+                if (currentStock < reduction) {
+                  results.push({
+                    syncId: item.syncId,
+                    transactionId: txId,
+                    operationKey: opKey,
+                    status: 'rejected',
+                    message: `الرصيد غير كافٍ لتعديل كمية التوريد (تم صرف جزء منها بالفعل). الرصيد الحالي (${currentStock}) لا يسمح بخصم (${reduction}).`,
+                  });
+                  continue;
+                }
               }
 
-              db.supplyTransactions[existingIdx] = {
-                ...existing,
-                ...updates,
-                updatedAt: now,
-                syncStatus: 'synced',
-                syncedAt: now,
-              };
-
-              dbModified = true;
-              processedOperationKeys.add(opKey);
-              if (item.syncId) processedOperationKeys.add(item.syncId);
-              results.push({
-                syncId: item.syncId,
-                transactionId: txId,
-                operationKey: opKey,
-                status: 'processed',
-                message: 'تم تحديث حركة التوريد وتعديل رصيد المخزن بدقة',
-              });
+              if (db.stocks[oldCategory] && delta !== 0) {
+                db.stocks[oldCategory].currentStock = Number(db.stocks[oldCategory].currentStock || 0) + delta;
+                db.stocks[oldCategory].totalReceived = (db.stocks[oldCategory].totalReceived || 0) + delta;
+                db.stocks[oldCategory].lastUpdated = now;
+              }
             } else {
-              // Not on server yet: insert
-              const supply = {
-                ...updates,
-                id: targetId,
-                transactionId: targetTxId,
-                deviceId: updates.deviceId || deviceId || item.deviceId,
-                syncStatus: 'synced',
-                syncedAt: now,
-              };
-              const stock = db.stocks[supply.stockCategory];
-              if (stock) {
-                stock.currentStock = (stock.currentStock || 0) + Number(supply.quantity || 0);
-                stock.totalReceived = (stock.totalReceived || 0) + Number(supply.quantity || 0);
-                stock.lastUpdated = now;
+              // Case 2: Different category (A -> B)
+              const currentStockOld = Number(db.stocks[oldCategory]?.currentStock || 0);
+              if (currentStockOld < oldQuantity) {
+                results.push({
+                  syncId: item.syncId,
+                  transactionId: txId,
+                  operationKey: opKey,
+                  status: 'rejected',
+                  message: `الرصيد غير كافٍ في الصنف السابق (${db.stocks[oldCategory]?.name || oldCategory}) لنقل التوريد (تم صرف جزء منه بالفعل).`,
+                });
+                continue;
               }
-              db.supplyTransactions.unshift(supply);
-              dbModified = true;
-              processedOperationKeys.add(opKey);
-              if (item.syncId) processedOperationKeys.add(item.syncId);
-              results.push({
-                syncId: item.syncId,
-                transactionId: txId,
-                operationKey: opKey,
-                status: 'processed',
-                message: 'تمت إضافة حركة التوريد المعدلة للخادم',
-              });
+
+              if (db.stocks[oldCategory]) {
+                db.stocks[oldCategory].currentStock = Number(db.stocks[oldCategory].currentStock || 0) - oldQuantity;
+                db.stocks[oldCategory].totalReceived = (db.stocks[oldCategory].totalReceived || 0) - oldQuantity;
+                db.stocks[oldCategory].lastUpdated = now;
+              }
+
+              if (db.stocks[newCategory]) {
+                db.stocks[newCategory].currentStock = Number(db.stocks[newCategory].currentStock || 0) + newQuantity;
+                db.stocks[newCategory].totalReceived = (db.stocks[newCategory].totalReceived || 0) + newQuantity;
+                db.stocks[newCategory].lastUpdated = now;
+              }
             }
+
+            db.supplyTransactions[existingIdx] = {
+              ...existing,
+              ...supplyObj,
+              id: existing.id,
+              transactionId: existing.transactionId || targetTxId,
+              stockCategory: newCategory,
+              quantity: newQuantity,
+              updatedAt: now,
+              syncStatus: 'synced',
+              syncedAt: now,
+            };
+
+            dbModified = true;
+            processedOperationKeys.add(opKey);
+            if (item.syncId) processedOperationKeys.add(item.syncId);
+            results.push({
+              syncId: item.syncId,
+              transactionId: txId,
+              operationKey: opKey,
+              status: 'processed',
+              message: 'تم تحديث حركة التوريد وتعديل رصيد المخزن بدقة',
+            });
+          } else {
+            // Not on server yet: insert
+            const supply = {
+              ...supplyObj,
+              id: targetId,
+              transactionId: targetTxId,
+              stockCategory: newCategory,
+              quantity: newQuantity,
+              deviceId: supplyObj.deviceId || deviceId || item.deviceId,
+              syncStatus: 'synced',
+              syncedAt: now,
+            };
+            const stock = db.stocks[newCategory];
+            if (stock) {
+              stock.currentStock = (stock.currentStock || 0) + Number(supply.quantity || 0);
+              stock.totalReceived = (stock.totalReceived || 0) + Number(supply.quantity || 0);
+              stock.lastUpdated = now;
+            }
+            db.supplyTransactions.unshift(supply);
+            dbModified = true;
+            processedOperationKeys.add(opKey);
+            if (item.syncId) processedOperationKeys.add(item.syncId);
+            results.push({
+              syncId: item.syncId,
+              transactionId: txId,
+              operationKey: opKey,
+              status: 'processed',
+              message: 'تمت إضافة حركة التوريد المعدلة للخادم',
+            });
           }
         } else if (item.operationType === 'DELETE_SUPPLY') {
           if (!db.syncTombstones) db.syncTombstones = [];
@@ -993,38 +1076,32 @@ async function startServer() {
             const existing = db.supplyTransactions[existingIdx];
             qtyDeducted = Number(existing.quantity || 0);
             catDeducted = existing.stockCategory;
-            db.supplyTransactions.splice(existingIdx, 1);
           } else if (item.payload) {
             qtyDeducted = Number(item.payload.quantityDeducted || item.payload.quantity || 0);
             catDeducted = item.payload.stockCategory || '';
           }
 
+          // Check stock adequacy before deleting supply
           if (catDeducted && db.stocks[catDeducted]) {
-            db.stocks[catDeducted].currentStock = Number(db.stocks[catDeducted].currentStock || 0) - qtyDeducted;
+            const currentStock = Number(db.stocks[catDeducted].currentStock || 0);
+            if (currentStock < qtyDeducted) {
+              results.push({
+                syncId: item.syncId,
+                transactionId: txId,
+                operationKey: opKey,
+                status: 'rejected',
+                message: `لا يمكن حذف حركة التوريد لأن الرصيد الحالي (${currentStock}) أقل من كمية التوريد (${qtyDeducted}) حيث تم صرف أجزاء منها بالفعل.`,
+              });
+              continue;
+            }
+
+            db.stocks[catDeducted].currentStock = currentStock - qtyDeducted;
             db.stocks[catDeducted].totalReceived = (db.stocks[catDeducted].totalReceived || 0) - qtyDeducted;
             db.stocks[catDeducted].lastUpdated = now;
+          }
 
-            if (db.stocks[catDeducted].currentStock < 0) {
-              if (!db.integrityIssues) db.integrityIssues = [];
-              db.integrityIssues.push({
-                id: `neg-balance-delsup-${catDeducted}-${targetId || targetTxId}-${Date.now()}`,
-                type: 'CRITICAL',
-                category: 'NEGATIVE_BALANCE',
-                title: `عجز حقيقي ورصيد سالب في صنف: ${db.stocks[catDeducted].name || catDeducted}`,
-                description: `تم حذف حركة توريد (${targetId || targetTxId}) بكمية (${qtyDeducted}) أدت إلى عجز حقيقي في الرصيد ليصبح (${db.stocks[catDeducted].currentStock}).`,
-                recordId: targetId,
-                transactionId: targetTxId,
-                stockCategory: catDeducted,
-                details: {
-                  date: item.payload?.deletedAt || now,
-                  affectedCategory: catDeducted,
-                  causingTransactionId: targetTxId,
-                  causingRecordId: targetId,
-                  quantityDeducted: qtyDeducted,
-                  resultingStock: db.stocks[catDeducted].currentStock,
-                },
-              });
-            }
+          if (existingIdx !== -1) {
+            db.supplyTransactions.splice(existingIdx, 1);
           }
 
           db.syncTombstones.push({
@@ -1036,7 +1113,10 @@ async function startServer() {
             deletedAt: item.payload?.deletedAt || now,
             deviceId: item.payload?.deviceId || item.deviceId || deviceId,
             deletedBy: item.payload?.deletedBy || item.userId || 'كاتب صحة سفلاق',
-            details: item.payload?.details,
+            details: item.payload?.details || {
+              stockCategory: catDeducted,
+              quantity: qtyDeducted,
+            },
           });
 
           processedOperationKeys.add(opKey);
@@ -1084,31 +1164,21 @@ async function startServer() {
               if (deductStock && late.ageCategory) {
                 const stockCat =
                   late.ageCategory === 'under_one_year' ? 'late_reg_under_year' : 'late_reg_over_year';
+                const currentStock = Number(db.stocks[stockCat]?.currentStock || 0);
+                if (currentStock < 1) {
+                  results.push({
+                    syncId: item.syncId,
+                    transactionId: txId,
+                    operationKey: opKey,
+                    status: 'rejected',
+                    message: `الرصيد غير كافٍ لصرف استمارة ساقط قيد في صنف (${db.stocks[stockCat]?.name || stockCat}).`,
+                  });
+                  continue;
+                }
                 if (db.stocks[stockCat]) {
-                  db.stocks[stockCat].currentStock = Number(db.stocks[stockCat].currentStock || 0) - 1;
+                  db.stocks[stockCat].currentStock = currentStock - 1;
                   db.stocks[stockCat].totalDispensed = (db.stocks[stockCat].totalDispensed || 0) + 1;
                   db.stocks[stockCat].lastUpdated = now;
-
-                  if (db.stocks[stockCat].currentStock < 0) {
-                    if (!db.integrityIssues) db.integrityIssues = [];
-                    db.integrityIssues.push({
-                      id: `neg-balance-late-${stockCat}-${late.id || txId}-${Date.now()}`,
-                      type: 'CRITICAL',
-                      category: 'NEGATIVE_BALANCE',
-                      title: `عجز حقيقي ورصيد سالب في استمارات ساقط القيد: ${db.stocks[stockCat].name || stockCat}`,
-                      description: `تم تسجيل استمارة ساقط قيد (${late.id || txId}) أدت إلى عجز حقيقي في الرصيد ليصبح (${db.stocks[stockCat].currentStock}).`,
-                      recordId: late.id,
-                      transactionId: txId,
-                      stockCategory: stockCat,
-                      details: {
-                        date: late.createdAt || now,
-                        affectedCategory: stockCat,
-                        causingTransactionId: txId,
-                        causingRecordId: late.id,
-                        resultingStock: db.stocks[stockCat].currentStock,
-                      },
-                    });
-                  }
                 }
               }
               db.lateRegistrations.unshift(late);

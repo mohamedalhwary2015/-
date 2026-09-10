@@ -1263,7 +1263,6 @@ export interface FactoryResetOptions {
   resetBy?: string;
   reason?: string;
   preserveOfficeSettings?: boolean;
-  adminSecretKey?: string;
 }
 
 export interface FactoryResetVerificationReport {
@@ -1543,10 +1542,6 @@ export function resetToCleanDatabase(): AppDatabase {
   }
 
   return clean;
-}
-
-export function resetToDemoDatabase(): AppDatabase {
-  return resetToCleanDatabase();
 }
 
 export { verifyDispenseCrudIntegrity } from './dispenseIntegrityVerification';
