@@ -188,13 +188,26 @@ export const BackupRestoreScreen: React.FC<BackupRestoreScreenProps> = ({
   };
 
   // Final execute restore after warning confirmation
-  const handleConfirmRestore = () => {
+  const handleConfirmRestore = async () => {
     if (!inspectionResult || !inspectionResult.data) return;
 
     setIsRestoring(true);
     try {
       saveDatabase(inspectionResult.data);
       onDatabaseUpdate(inspectionResult.data);
+
+      // If online, notify server /api/restore for clean atomic restoration
+      if (typeof window !== 'undefined' && navigator.onLine) {
+        fetch('/api/restore', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            database: inspectionResult.data,
+            restoredBy: db.officeSettings?.currentEmployee || 'غير محدد',
+            reason: `Restored from file ${selectedFileName || 'backup.json'}`,
+          }),
+        }).catch((err) => console.warn('Server restore notification warning:', err));
+      }
 
       setShowWarningModal(false);
       setRestoreSuccessMessage(

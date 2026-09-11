@@ -170,8 +170,18 @@ function getItemQuantityFromRecord(record: DispenseRecord, category: StockCatego
   ) {
     return 1;
   }
-  if (category === 'health_cards_male' && record.dispenseType === 'birth_male') return 1;
-  if (category === 'health_cards_female' && record.dispenseType === 'birth_female') return 1;
+  if (
+    category === 'health_cards_male' &&
+    (record.dispenseType === 'health_card_male' || record.dispenseType === 'birth_male')
+  ) {
+    return 1;
+  }
+  if (
+    category === 'health_cards_female' &&
+    (record.dispenseType === 'health_card_female' || record.dispenseType === 'birth_female')
+  ) {
+    return 1;
+  }
   if (category === 'death_certificates' && record.dispenseType === 'death') return 1;
   if (category === 'death_notifications' && record.dispenseType === 'death') return 1;
   if (category === 'late_reg_under_year' && record.dispenseType === 'late_reg_under_year') return 1;

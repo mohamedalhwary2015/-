@@ -274,7 +274,8 @@ export function saveDatabase(db: AppDatabase): void {
       if (debounceSyncTimer) clearTimeout(debounceSyncTimer);
       debounceSyncTimer = setTimeout(() => {
         if (!isFactoryResetInProgress()) {
-          executeAutoSync(db, 'change').catch(() => {});
+          const latestDb = getDatabase();
+          executeAutoSync(latestDb, 'change').catch(() => {});
         }
       }, 1200);
     }
@@ -331,7 +332,7 @@ export function addSupplyTransaction(
   const syncId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sync-${Date.now()}`;
   enqueueSyncItem({
     syncId,
-    operationKey: `SUPPLY:${supply.id}:${syncId}`,
+    operationKey: `SUPPLY:${supply.id}`,
     transactionId: txId,
     deviceId: devId,
     userId: supply.receivedBy || 'غير محدد',
@@ -408,7 +409,7 @@ export function updateSupplyTransaction(
   const syncId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sync-${Date.now()}`;
   enqueueSyncItem({
     syncId,
-    operationKey: `UPDATE_SUPPLY:${updatedSupply.id}:${syncId}`,
+    operationKey: `UPDATE_SUPPLY:${updatedSupply.id}`,
     transactionId: updatedSupply.transactionId || `tx-${updatedSupply.id}`,
     deviceId: updatedSupply.deviceId || getOrCreateDeviceId(),
     userId: employeeName || updatedSupply.receivedBy || 'غير محدد',
@@ -468,7 +469,7 @@ export function deleteSupplyTransaction(id: string, deletedBy?: string): AppData
     id: `tomb-${typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now()}`,
     recordId: tx.id,
     transactionId: tx.transactionId || `tx-${tx.id}`,
-    operationKey: `DELETE_SUPPLY:${tx.id}:${syncId}`,
+    operationKey: `DELETE_SUPPLY:${tx.id}`,
     operationType: 'DELETE_SUPPLY',
     deletedAt: now,
     deviceId: tx.deviceId || getOrCreateDeviceId(),
@@ -486,7 +487,7 @@ export function deleteSupplyTransaction(id: string, deletedBy?: string): AppData
   // Enqueue DELETE_SUPPLY
   enqueueSyncItem({
     syncId,
-    operationKey: `DELETE_SUPPLY:${tx.id}:${syncId}`,
+    operationKey: `DELETE_SUPPLY:${tx.id}`,
     transactionId: tx.transactionId || `tx-${tx.id}`,
     deviceId: tx.deviceId || getOrCreateDeviceId(),
     userId: tombstone.deletedBy || 'غير محدد',
@@ -550,7 +551,7 @@ export function addDispenseRecord(
   const syncId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sync-${Date.now()}`;
   enqueueSyncItem({
     syncId,
-    operationKey: `DISPENSE:${record.id}:${syncId}`,
+    operationKey: `DISPENSE:${record.id}`,
     transactionId: txId,
     deviceId: devId,
     userId: record.dispensedBy || 'غير محدد',
@@ -640,7 +641,7 @@ export function updateDispenseRecord(
   const syncId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sync-${Date.now()}`;
   enqueueSyncItem({
     syncId,
-    operationKey: `UPDATE_DISPENSE:${updatedRecord.id}:${syncId}`,
+    operationKey: `UPDATE_DISPENSE:${updatedRecord.id}`,
     transactionId: updatedRecord.transactionId || updatedRecord.id,
     deviceId: updatedRecord.deviceId || getOrCreateDeviceId(),
     userId: employeeName || updatedRecord.dispensedBy || db.officeSettings?.currentEmployee || 'كاتب صحة سفلاق',
@@ -701,7 +702,7 @@ export function deleteDispenseRecord(id: string, deletedBy?: string): AppDatabas
     id: `tomb-${typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now()}`,
     recordId: record.id,
     transactionId: txId,
-    operationKey: `DELETE_DISPENSE:${record.id}:${syncId}`,
+    operationKey: `DELETE_DISPENSE:${record.id}`,
     operationType: 'DELETE_DISPENSE',
     deletedAt: now,
     deviceId: devId,
@@ -720,7 +721,7 @@ export function deleteDispenseRecord(id: string, deletedBy?: string): AppDatabas
   // 4. Enqueue Sync Item with DELETE_DISPENSE and unique operationKey
   enqueueSyncItem({
     syncId,
-    operationKey: `DELETE_DISPENSE:${record.id}:${syncId}`,
+    operationKey: `DELETE_DISPENSE:${record.id}`,
     transactionId: txId,
     deviceId: devId,
     userId: tombstone.deletedBy || 'غير محدد',
@@ -754,7 +755,7 @@ export function addLateRegistration(
       (l) => l.formNumber && l.formNumber.trim() === cleanFormNumber
     );
     if (existing) {
-      throw new Error(`رقم استمارة ساقط القيد (${cleanFormNumber}) مسجل مسبقاً في المنظومة باسم (${existing.citizenName}). لا يمكن تكرار رقم الاستمارة.`);
+      throw new Error(`رقم استمارة ساقط القيد (${cleanFormNumber}) مسجل مسبقاً في المنظومة باسم (${existing.personName}). لا يمكن تكرار رقم الاستمارة.`);
     }
   }
 
@@ -793,7 +794,7 @@ export function addLateRegistration(
   const syncId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sync-${Date.now()}`;
   enqueueSyncItem({
     syncId,
-    operationKey: `LATE_REG_ADD:${record.id}:${syncId}`,
+    operationKey: `LATE_REG_ADD:${record.id}`,
     transactionId: txId,
     deviceId: devId,
     userId: record.staffName || 'غير محدد',
@@ -826,7 +827,7 @@ export function updateLateRegistration(
     const devId = getOrCreateDeviceId();
     enqueueSyncItem({
       syncId,
-      operationKey: `LATE_REG_UPDATE:${id}:${syncId}`,
+      operationKey: `LATE_REG_UPDATE:${id}`,
       transactionId: txId,
       deviceId: devId,
       userId: updatedRecord.staffName || 'كاتب صحة سفلاق',
@@ -983,7 +984,7 @@ export function deleteLateRegistration(id: string, deletedBy?: string): AppDatab
     id: `tomb-${typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Date.now()}`,
     recordId: record.id,
     transactionId: txId,
-    operationKey: `DELETE_LATE_REG:${record.id}:${syncId}`,
+    operationKey: `DELETE_LATE_REG:${record.id}`,
     operationType: 'DELETE_LATE_REG',
     deletedAt: now,
     deviceId: devId,
@@ -999,7 +1000,7 @@ export function deleteLateRegistration(id: string, deletedBy?: string): AppDatab
 
   enqueueSyncItem({
     syncId,
-    operationKey: `DELETE_LATE_REG:${record.id}:${syncId}`,
+    operationKey: `DELETE_LATE_REG:${record.id}`,
     transactionId: txId,
     deviceId: devId,
     userId: tombstone.deletedBy || 'غير محدد',
@@ -1021,14 +1022,15 @@ export function deleteLateRegistration(id: string, deletedBy?: string): AppDatab
 export function manualAdjustStock(
   category: StockCategory,
   newQuantity: number,
-  reason: string
+  reason: string,
+  isDamageOrCancellation?: boolean
 ): AppDatabase {
   const db = getDatabase();
   const stock = db.stocks[category];
   if (stock) {
     const diff = newQuantity - stock.currentStock;
     stock.currentStock = newQuantity;
-    if (diff < 0) {
+    if (diff < 0 && (isDamageOrCancellation || reason.includes('تالف') || reason.includes('ملغي') || reason.includes('إتلاف'))) {
       stock.damagedOrCancelled += Math.abs(diff);
     }
     stock.lastUpdated = new Date().toISOString();

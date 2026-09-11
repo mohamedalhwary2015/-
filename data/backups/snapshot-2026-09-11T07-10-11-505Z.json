@@ -14,7 +14,7 @@
       "openingSerialTo": "",
       "minThreshold": 30,
       "unit": "شهادة / استمارة",
-      "lastUpdated": "2026-09-11T07:10:24.408Z"
+      "lastUpdated": "2026-09-11T07:10:11.360Z"
     },
     "birth_notifications": {
       "id": "birth_notifications",
@@ -29,7 +29,7 @@
       "openingSerialTo": "",
       "minThreshold": 30,
       "unit": "أصل بلاغ",
-      "lastUpdated": "2026-09-11T07:10:24.408Z"
+      "lastUpdated": "2026-09-11T07:10:11.360Z"
     },
     "death_certificates": {
       "id": "death_certificates",
@@ -44,7 +44,7 @@
       "openingSerialTo": "",
       "minThreshold": 20,
       "unit": "شهادة / استمارة",
-      "lastUpdated": "2026-09-11T07:10:24.408Z"
+      "lastUpdated": "2026-09-11T07:10:11.360Z"
     },
     "death_notifications": {
       "id": "death_notifications",
@@ -59,7 +59,7 @@
       "openingSerialTo": "",
       "minThreshold": 20,
       "unit": "أصل بلاغ",
-      "lastUpdated": "2026-09-11T07:10:24.408Z"
+      "lastUpdated": "2026-09-11T07:10:11.360Z"
     },
     "health_cards_male": {
       "id": "health_cards_male",
@@ -74,7 +74,7 @@
       "openingSerialTo": "",
       "minThreshold": 25,
       "unit": "بطاقة",
-      "lastUpdated": "2026-09-11T07:10:24.408Z"
+      "lastUpdated": "2026-09-11T07:10:11.360Z"
     },
     "health_cards_female": {
       "id": "health_cards_female",
@@ -89,7 +89,7 @@
       "openingSerialTo": "",
       "minThreshold": 25,
       "unit": "بطاقة",
-      "lastUpdated": "2026-09-11T07:10:24.408Z"
+      "lastUpdated": "2026-09-11T07:10:11.360Z"
     },
     "late_reg_under_year": {
       "id": "late_reg_under_year",
@@ -104,7 +104,7 @@
       "openingSerialTo": "",
       "minThreshold": 15,
       "unit": "استمارة / نموذج",
-      "lastUpdated": "2026-09-11T07:10:24.408Z"
+      "lastUpdated": "2026-09-11T07:10:11.360Z"
     },
     "late_reg_over_year": {
       "id": "late_reg_over_year",
@@ -119,7 +119,7 @@
       "openingSerialTo": "",
       "minThreshold": 15,
       "unit": "استمارة / نموذج",
-      "lastUpdated": "2026-09-11T07:10:24.408Z"
+      "lastUpdated": "2026-09-11T07:10:11.360Z"
     }
   },
   "dispenseRecords": [
@@ -136,7 +136,7 @@
       ],
       "transactionId": "tx-disp-local-1",
       "syncStatus": "synced",
-      "syncedAt": "2026-09-11T07:10:24.408Z"
+      "syncedAt": "2026-09-11T07:10:11.360Z"
     }
   ],
   "supplyTransactions": [],
@@ -148,5 +148,5 @@
     "officeName": "مكتب صحة سفلاق",
     "currentEmployee": "غير محدد"
   },
-  "lastBackupDate": "2026-09-11T07:10:24.496Z"
+  "lastBackupDate": "2026-09-11T07:10:11.504Z"
 }

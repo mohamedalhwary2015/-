@@ -1,26 +1,34 @@
 {
-  "version": 3,
+  "version": 1,
+  "lastBackupDate": "2026-09-10T07:21:10.144Z",
+  "officeSettings": {
+    "officeName": "مكتب صحة سفلاق",
+    "center": "مركز ساقلتة",
+    "directorate": "الإدارة الصحية بساقلتة",
+    "governorate": "محافظة سوهاج",
+    "currentEmployee": "كاتب صحة سفلاق"
+  },
   "stocks": {
     "birth_certificates": {
       "id": "birth_certificates",
       "name": "شهادات الميلاد الورقية الرسمية",
       "category": "birth",
-      "currentStock": 50,
+      "currentStock": 0,
       "totalReceived": 0,
-      "totalDispensed": 1,
+      "totalDispensed": 0,
       "damagedOrCancelled": 0,
       "openingStock": 0,
       "openingSerialFrom": "",
       "openingSerialTo": "",
       "minThreshold": 30,
       "unit": "شهادة / استمارة",
-      "lastUpdated": "2026-09-11T07:10:24.408Z"
+      "lastUpdated": "2026-09-10T07:21:10.144Z"
     },
     "birth_notifications": {
       "id": "birth_notifications",
       "name": "بلاغات الميلاد (إخطار تبليغ)",
       "category": "birth",
-      "currentStock": 50,
+      "currentStock": 0,
       "totalReceived": 0,
       "totalDispensed": 0,
       "damagedOrCancelled": 0,
@@ -29,13 +37,13 @@
       "openingSerialTo": "",
       "minThreshold": 30,
       "unit": "أصل بلاغ",
-      "lastUpdated": "2026-09-11T07:10:24.408Z"
+      "lastUpdated": "2026-09-10T07:21:10.144Z"
     },
     "death_certificates": {
       "id": "death_certificates",
       "name": "شهادات الوفاة الورقية الرسمية",
       "category": "death",
-      "currentStock": 40,
+      "currentStock": 0,
       "totalReceived": 0,
       "totalDispensed": 0,
       "damagedOrCancelled": 0,
@@ -44,13 +52,13 @@
       "openingSerialTo": "",
       "minThreshold": 20,
       "unit": "شهادة / استمارة",
-      "lastUpdated": "2026-09-11T07:10:24.408Z"
+      "lastUpdated": "2026-09-10T07:21:10.144Z"
     },
     "death_notifications": {
       "id": "death_notifications",
       "name": "بلاغات الوفاة (إخطار تبليغ)",
       "category": "death",
-      "currentStock": 40,
+      "currentStock": 0,
       "totalReceived": 0,
       "totalDispensed": 0,
       "damagedOrCancelled": 0,
@@ -59,13 +67,13 @@
       "openingSerialTo": "",
       "minThreshold": 20,
       "unit": "أصل بلاغ",
-      "lastUpdated": "2026-09-11T07:10:24.408Z"
+      "lastUpdated": "2026-09-10T07:21:10.144Z"
     },
     "health_cards_male": {
       "id": "health_cards_male",
       "name": "بطاقات صحية ذكور (تطعيمات ورعاية)",
       "category": "health_card",
-      "currentStock": 30,
+      "currentStock": 0,
       "totalReceived": 0,
       "totalDispensed": 0,
       "damagedOrCancelled": 0,
@@ -74,13 +82,13 @@
       "openingSerialTo": "",
       "minThreshold": 25,
       "unit": "بطاقة",
-      "lastUpdated": "2026-09-11T07:10:24.408Z"
+      "lastUpdated": "2026-09-10T07:21:10.144Z"
     },
     "health_cards_female": {
       "id": "health_cards_female",
       "name": "بطاقات صحية إناث (تطعيمات ورعاية)",
       "category": "health_card",
-      "currentStock": 30,
+      "currentStock": 0,
       "totalReceived": 0,
       "totalDispensed": 0,
       "damagedOrCancelled": 0,
@@ -89,13 +97,13 @@
       "openingSerialTo": "",
       "minThreshold": 25,
       "unit": "بطاقة",
-      "lastUpdated": "2026-09-11T07:10:24.408Z"
+      "lastUpdated": "2026-09-10T07:21:10.144Z"
     },
     "late_reg_under_year": {
       "id": "late_reg_under_year",
       "name": "استمارات ساقط قيد (أقل من عام)",
       "category": "late_registration",
-      "currentStock": 25,
+      "currentStock": 0,
       "totalReceived": 0,
       "totalDispensed": 0,
       "damagedOrCancelled": 0,
@@ -104,13 +112,13 @@
       "openingSerialTo": "",
       "minThreshold": 15,
       "unit": "استمارة / نموذج",
-      "lastUpdated": "2026-09-11T07:10:24.408Z"
+      "lastUpdated": "2026-09-10T07:21:10.144Z"
     },
     "late_reg_over_year": {
       "id": "late_reg_over_year",
       "name": "استمارات ساقط قيد (أكبر من عام)",
       "category": "late_registration",
-      "currentStock": 25,
+      "currentStock": 0,
       "totalReceived": 0,
       "totalDispensed": 0,
       "damagedOrCancelled": 0,
@@ -119,34 +127,11 @@
       "openingSerialTo": "",
       "minThreshold": 15,
       "unit": "استمارة / نموذج",
-      "lastUpdated": "2026-09-11T07:10:24.408Z"
+      "lastUpdated": "2026-09-10T07:21:10.144Z"
     }
   },
-  "dispenseRecords": [
-    {
-      "id": "disp-local-1",
-      "date": "2026-05-10",
-      "beneficiaryName": "أحمد محلي",
-      "dispenseType": "birth_male",
-      "itemsDeducted": [
-        {
-          "stockCategory": "birth_certificates",
-          "quantity": 1
-        }
-      ],
-      "transactionId": "tx-disp-local-1",
-      "syncStatus": "synced",
-      "syncedAt": "2026-09-11T07:10:24.408Z"
-    }
-  ],
   "supplyTransactions": [],
+  "dispenseRecords": [],
   "lateRegistrations": [],
-  "auditLogs": [],
-  "syncQueue": [],
-  "syncTombstones": [],
-  "officeSettings": {
-    "officeName": "مكتب صحة سفلاق",
-    "currentEmployee": "غير محدد"
-  },
-  "lastBackupDate": "2026-09-11T07:10:24.496Z"
+  "syncTombstones": []
 }

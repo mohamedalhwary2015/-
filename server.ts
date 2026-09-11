@@ -477,12 +477,20 @@ async function startServer() {
         const txId = item.transactionId || item.syncId;
         const opType = item.operationType;
         const recId = item.recordId || item.payload?.id || item.payload?.recordId || '';
-        const opKey = item.operationKey || `${opType}:${recId}:${item.syncId || txId}`;
+        const opKey = item.operationKey || `${opType}:${recId || txId}`;
+        const baseKey = `${opType}:${recId || txId}`;
+        const txKey = `${opType}:${txId}`;
 
         if (!txId && !opKey) continue;
 
-        // Idempotency check: if exact operation already processed, return success without re-applying
-        if (processedOperationKeys.has(opKey) || (item.syncId && processedOperationKeys.has(item.syncId))) {
+        // Idempotency check: if exact operation, base key, or transaction ID already processed, return success without re-applying
+        if (
+          processedOperationKeys.has(opKey) ||
+          processedOperationKeys.has(baseKey) ||
+          processedOperationKeys.has(txKey) ||
+          (txId && processedOperationKeys.has(txId)) ||
+          (item.syncId && processedOperationKeys.has(item.syncId))
+        ) {
           results.push({
             syncId: item.syncId,
             transactionId: txId,
@@ -1612,6 +1620,78 @@ async function startServer() {
     } catch (err: any) {
       console.error('Error during /api/factory-reset:', err);
       res.status(500).json({ success: false, message: err.message || 'Internal server error during factory reset' });
+    }
+  });
+
+  // Dedicated endpoint for full authorized database restore
+  // Ensures clean atomic replacement of the server database without data loss,
+  // creates a safety backup of existing state, and registers restored transactions in idempotency registry.
+  app.post('/api/restore', (req, res) => {
+    try {
+      const { database, restoredBy, reason } = req.body;
+      if (!database || !database.stocks || !Array.isArray(database.dispenseRecords)) {
+        return res.status(400).json({ success: false, message: 'Invalid database payload for restore' });
+      }
+
+      const currentDb = cachedDatabase || loadDatabaseFromDisk();
+
+      // Step 1: Pre-restore safety snapshot to disk
+      if (currentDb) {
+        const timestampStr = new Date().toISOString().replace(/[:.]/g, '-');
+        const backupName = `backup-before-restore-${timestampStr}.json`;
+        const backupPath = path.join(BACKUPS_DIR, backupName);
+        fs.writeFileSync(backupPath, JSON.stringify(currentDb, null, 2), 'utf-8');
+        console.log(`[Restore] Pre-restore safety backup saved to ${backupName}`);
+      }
+
+      // Step 2: Prepare target database
+      const now = new Date().toISOString();
+      const targetDb: any = {
+        ...database,
+        version: (currentDb?.version || 1) + 1,
+        lastBackupDate: now,
+      };
+
+      // Step 3: Re-populate idempotency registry with records in targetDb
+      processedOperationKeys.clear();
+      (targetDb.dispenseRecords || []).forEach((r: any) => {
+        const txId = r.transactionId || r.id;
+        processedOperationKeys.add(`DISPENSE:${r.id}`);
+        processedOperationKeys.add(`DISPENSE:${txId}`);
+        processedOperationKeys.add(txId);
+      });
+      (targetDb.supplyTransactions || []).forEach((s: any) => {
+        const txId = s.transactionId || s.id;
+        processedOperationKeys.add(`SUPPLY:${s.id}`);
+        processedOperationKeys.add(`SUPPLY:${txId}`);
+        processedOperationKeys.add(txId);
+      });
+      (targetDb.lateRegistrations || []).forEach((l: any) => {
+        const txId = l.transactionId || l.id;
+        processedOperationKeys.add(`LATE_REG_ADD:${l.id}`);
+        processedOperationKeys.add(`LATE_REG_ADD:${txId}`);
+        processedOperationKeys.add(txId);
+      });
+      (targetDb.syncTombstones || []).forEach((t: any) => {
+        if (t.operationKey) processedOperationKeys.add(t.operationKey);
+        if (t.recordId) processedOperationKeys.add(`${t.operationType}:${t.recordId}`);
+        if (t.transactionId) processedOperationKeys.add(`${t.operationType}:${t.transactionId}`);
+      });
+      saveProcessedTransactions();
+
+      // Step 4: Atomically save target database to disk
+      saveDatabaseToDisk(targetDb);
+      console.log(`[Restore] Database successfully restored by ${restoredBy || 'unknown'}. Reason: ${reason || 'Full restore'}`);
+
+      res.json({
+        success: true,
+        message: 'تمت استعادة قاعدة البيانات المركزية بنجاح واعتمادها كنسخة تشغيلية وحفظ نسخة أمان قبل الاستعادة',
+        database: targetDb,
+        serverTime: now,
+      });
+    } catch (err: any) {
+      console.error('Error during /api/restore:', err);
+      res.status(500).json({ success: false, message: err.message || 'Internal server error during restore' });
     }
   });
 

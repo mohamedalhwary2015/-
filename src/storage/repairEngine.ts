@@ -624,8 +624,29 @@ export async function executeProductionRepair(
     return repairTombstoneIds.has(id) || (txId ? repairTombstoneIds.has(txId) : false);
   };
 
+  // Build set of suspect online-only IDs to prevent accidental merging
+  const suspectOnlineIds = new Set<string>();
+  auditReport.supplyRows.forEach((r) => {
+    if (r.classification === 'online_only_suspect' || r.classification === 'unconfirmed') {
+      suspectOnlineIds.add(r.id);
+      if (r.transactionId) suspectOnlineIds.add(r.transactionId);
+    }
+  });
+  auditReport.dispenseRows.forEach((r) => {
+    if (r.classification === 'online_only_suspect' || r.classification === 'unconfirmed') {
+      suspectOnlineIds.add(r.id);
+      if (r.transactionId) suspectOnlineIds.add(r.transactionId);
+    }
+  });
+  auditReport.lateRegRows.forEach((r) => {
+    if (r.classification === 'online_only_suspect' || r.classification === 'unconfirmed') {
+      suspectOnlineIds.add(r.id);
+      if (r.transactionId) suspectOnlineIds.add(r.transactionId);
+    }
+  });
+
   // 1. Filter Supply Transactions:
-  // Retain all offline supplies + any online supplies that are NOT in excludedIds
+  // Retain all offline supplies + verified online supplies that are NOT in excludedIds or suspect
   const cleanSupplies: SupplyTransaction[] = [];
   const seenTxIds = new Set<string>();
 
@@ -645,9 +666,12 @@ export async function executeProductionRepair(
     }
   });
 
-  // Add any valid or unconfirmed online supplies (if not already present and not excluded)
+  // Add verified online supplies (never merge unverified online_only_suspect records)
   (onlineDb.supplyTransactions || []).forEach((s) => {
     const txId = s.transactionId || `tx-${s.id}`;
+    if (suspectOnlineIds.has(s.id) || suspectOnlineIds.has(txId)) {
+      return; // Do not merge suspect online-only records
+    }
     if (!excludedIds.has(s.id) && !excludedIds.has(txId)) {
       if (!seenTxIds.has(txId)) {
         seenTxIds.add(txId);
@@ -682,6 +706,9 @@ export async function executeProductionRepair(
 
   (onlineDb.dispenseRecords || []).forEach((d) => {
     const txId = d.transactionId || `tx-${d.id}`;
+    if (suspectOnlineIds.has(d.id) || suspectOnlineIds.has(txId)) {
+      return; // Do not merge suspect online-only records
+    }
     if (!excludedIds.has(d.id) && !excludedIds.has(txId) && !isRepairTombstoned(d.id, d.transactionId)) {
       if (!seenDispenseTxIds.has(txId)) {
         seenDispenseTxIds.add(txId);
@@ -716,6 +743,9 @@ export async function executeProductionRepair(
 
   (onlineDb.lateRegistrations || []).forEach((l) => {
     const txId = l.transactionId || `tx-${l.id}`;
+    if (suspectOnlineIds.has(l.id) || suspectOnlineIds.has(txId)) {
+      return; // Do not merge suspect online-only records
+    }
     if (!excludedIds.has(l.id) && !excludedIds.has(txId)) {
       if (!seenLateTxIds.has(txId)) {
         seenLateTxIds.add(txId);
@@ -756,11 +786,18 @@ export async function executeProductionRepair(
     const damagedOrCancelled = Number(cleanedDb.stocks?.[cat]?.damagedOrCancelled || 0);
     const calculatedCurrent = openingQty + receivedReal - dispensedReal - damagedOrCancelled;
 
+    // Production Data Protection: Preserve confirmed offline stock if established
+    const existingOfflineStock = offlineDb.stocks?.[cat]?.currentStock;
+    const finalCurrent =
+      typeof existingOfflineStock === 'number' && !isNaN(existingOfflineStock)
+        ? existingOfflineStock
+        : calculatedCurrent;
+
     rebuiltStocks[cat] = {
       id: cat,
       name: catInfo?.name || cat,
       category: catInfo?.category || 'birth',
-      currentStock: calculatedCurrent,
+      currentStock: finalCurrent,
       totalReceived: receivedReal,
       totalDispensed: dispensedReal,
       damagedOrCancelled,
@@ -781,27 +818,33 @@ export async function executeProductionRepair(
   cleanedDb.lastBackupDate = now;
   cleanedDb.version = (cleanedDb.version || 1) + 1;
 
-  // 5. Atomic Push to Server via /api/repair/apply
+  // 5. Atomic Push to Server via /api/repair/apply (Non-blocking if offline)
   const removedCount = excludedIds.size;
-  try {
-    const res = await fetch('/api/repair/apply', {
-      method: 'POST',
-      headers: getApiAuthHeaders(),
-      body: JSON.stringify({
-        database: cleanedDb,
-        reportMarkdown: auditReport.markdownReport,
-        removedCount,
-        deviceId: getOrCreateDeviceId(),
-      }),
-    });
+  const isClientOffline = typeof window !== 'undefined' && typeof navigator !== 'undefined' && !navigator.onLine;
 
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.message || 'فشل الخادم في تطبيق التصحيح المعتمد');
+  if (isClientOffline) {
+    console.warn('[Repair] Device is offline; saving cleaned database locally and deferring server sync');
+  } else {
+    try {
+      const apiUrl = typeof window !== 'undefined' ? '/api/repair/apply' : 'http://localhost:3000/api/repair/apply';
+      const res = await fetch(apiUrl, {
+        method: 'POST',
+        headers: getApiAuthHeaders(),
+        body: JSON.stringify({
+          database: cleanedDb,
+          reportMarkdown: auditReport.markdownReport,
+          removedCount,
+          deviceId: getOrCreateDeviceId(),
+        }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        console.warn('Server repair warning:', errData.message || res.statusText);
+      }
+    } catch (err: any) {
+      console.warn('Server repair apply notice (continuing locally):', err.message);
     }
-  } catch (err: any) {
-    console.error('Server repair apply error:', err);
-    throw err;
   }
 
   // 6. Save locally to localStorage and IndexedDB

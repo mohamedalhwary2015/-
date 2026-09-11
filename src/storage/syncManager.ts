@@ -178,9 +178,18 @@ export async function enqueueSyncItem(
     retryCount: 0,
   };
 
-  // 1. Save in local storage fallback
+  // 1. Save in local storage fallback with deduplication
   const fallbackList = getLocalQueueFallback();
-  fallbackList.push(queueItem);
+  const existingIdx = fallbackList.findIndex(
+    (x) =>
+      (queueItem.operationKey && x.operationKey === queueItem.operationKey) ||
+      (x.syncId === queueItem.syncId)
+  );
+  if (existingIdx !== -1) {
+    fallbackList[existingIdx] = queueItem;
+  } else {
+    fallbackList.push(queueItem);
+  }
   saveLocalQueueFallback(fallbackList);
   markHasPendingChanges(true);
 
