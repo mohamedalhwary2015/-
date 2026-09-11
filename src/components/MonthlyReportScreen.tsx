@@ -111,15 +111,37 @@ export const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
     setSelectedMonthIdx(currentMonthIdx);
   };
 
-  // Dispense records for this month
-  const monthDispenses = useMemo(() => {
-    return db.dispenseRecords.filter((r) => r.date.startsWith(monthStr));
-  }, [db.dispenseRecords, monthStr]);
+  const isSelectedCurrentMonth = (selectedYear === currentYear && selectedMonthIdx === currentMonthIdx);
 
-  // Supply transactions for this month
+  // Tombstones lookup to filter out deleted transactions
+  const tombstoneSet = useMemo(() => {
+    const set = new Set<string>();
+    (db.syncTombstones || []).forEach(t => {
+      if (t.recordId) set.add(t.recordId);
+      if (t.transactionId) set.add(t.transactionId);
+    });
+    return set;
+  }, [db.syncTombstones]);
+
+  // Dispense records for this month (excluding deleted/tombstoned)
+  const monthDispenses = useMemo(() => {
+    return db.dispenseRecords.filter((r) => {
+      if (tombstoneSet.has(r.id) || (r.transactionId && tombstoneSet.has(r.transactionId))) {
+        return false;
+      }
+      return r.date.startsWith(monthStr);
+    });
+  }, [db.dispenseRecords, monthStr, tombstoneSet]);
+
+  // Supply transactions for this month (excluding deleted/tombstoned)
   const monthSupplies = useMemo(() => {
-    return db.supplyTransactions.filter((s) => s.date.startsWith(monthStr));
-  }, [db.supplyTransactions, monthStr]);
+    return db.supplyTransactions.filter((s) => {
+      if (tombstoneSet.has(s.id) || (s.transactionId && tombstoneSet.has(s.transactionId))) {
+        return false;
+      }
+      return s.date.startsWith(monthStr);
+    });
+  }, [db.supplyTransactions, monthStr, tombstoneSet]);
 
   // 1. BIRTHS CALCULATIONS (إجمالي المواليد الفعلية فقط - لا تحتسب البطاقات الصحية المنفردة كمواليد)
   const birthsData = useMemo(() => {
@@ -256,8 +278,34 @@ export const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
         .filter((s) => s.stockCategory === cat)
         .reduce((sum, s) => sum + s.quantity, 0);
 
+      // If viewing a historical month, calculate activity between end of that month and today
+      let dispensedAfter = 0;
+      let receivedAfter = 0;
+      if (!isSelectedCurrentMonth) {
+        db.dispenseRecords.forEach((r) => {
+          if (tombstoneSet.has(r.id) || (r.transactionId && tombstoneSet.has(r.transactionId))) return;
+          if (r.date > `${monthStr}-31`) {
+            if (r.itemsDeducted && Array.isArray(r.itemsDeducted)) {
+              const item = r.itemsDeducted.find((i) => i.stockCategory === cat);
+              if (item) dispensedAfter += item.quantity;
+            }
+          }
+        });
+        db.supplyTransactions.forEach((s) => {
+          if (tombstoneSet.has(s.id) || (s.transactionId && tombstoneSet.has(s.transactionId))) return;
+          if (s.date > `${monthStr}-31` && s.stockCategory === cat) {
+            receivedAfter += s.quantity;
+          }
+        });
+      }
+
+      // Accurate ending stock at the close of selected month
+      const endingStock = isSelectedCurrentMonth
+        ? currentStock
+        : (currentStock + dispensedAfter - receivedAfter);
+
       // Accurate starting stock for the month
-      const startingStock = currentStock + dispensedThisMonth - receivedThisMonth;
+      const startingStock = endingStock + dispensedThisMonth - receivedThisMonth;
 
       const isLowStock = currentStock <= minThreshold;
 
@@ -266,12 +314,13 @@ export const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
         startingStock,
         receivedThisMonth,
         dispensedThisMonth,
-        currentStock, // الرصيد المتبقي الحالي
+        endingStock,
+        currentStock, // الرصيد الفعلي المتبقي بالمخزن الآن
         minThreshold,
         isLowStock,
       };
     });
-  }, [db.stocks, monthDispenses, monthSupplies]);
+  }, [db.stocks, db.dispenseRecords, db.supplyTransactions, monthDispenses, monthSupplies, monthStr, isSelectedCurrentMonth, tombstoneSet]);
 
   // Filter records in the bottom table by active sub-tab and search
   const displayedRecords = useMemo(() => {
@@ -337,7 +386,7 @@ export const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
         String(s.startingStock),
         String(s.receivedThisMonth),
         String(s.dispensedThisMonth),
-        String(s.currentStock),
+        isSelectedCurrentMonth ? String(s.currentStock) : String(s.endingStock),
         s.unit,
         String(s.minThreshold),
       ]);
@@ -397,7 +446,7 @@ export const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
       String(s.startingStock),
       String(s.receivedThisMonth),
       String(s.dispensedThisMonth),
-      `${s.currentStock} ${s.unit}`,
+      `${isSelectedCurrentMonth ? s.currentStock : s.endingStock} ${s.unit}`,
     ]);
 
     const finalY = (doc as any).lastAutoTable?.finalY || 100;
@@ -874,7 +923,7 @@ export const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
                 <th className="py-3 px-3 text-center">الوارد بالشهر</th>
                 <th className="py-3 px-3 text-center text-red-700">المنصرف بالشهر</th>
                 <th className="py-3 px-4 text-center bg-emerald-50 text-emerald-900">
-                  الرصيد المتبقي الحالي
+                  {isSelectedCurrentMonth ? 'الرصيد المتبقي الحالي' : `رصيد نهاية شهر ${monthNameAr}`}
                 </th>
                 <th className="py-3 px-3 text-center">حد التنبيه</th>
                 <th className="py-3 px-3 text-center">حالة الرصيد</th>
@@ -910,7 +959,7 @@ export const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
                         ? 'bg-amber-100 text-amber-900 border border-amber-300'
                         : 'bg-emerald-100 text-emerald-950 border border-emerald-300'
                     }`}>
-                      {cat.currentStock} {cat.unit}
+                      {isSelectedCurrentMonth ? cat.currentStock : cat.endingStock} {cat.unit}
                     </span>
                   </td>
                   <td className="py-3.5 px-3 text-center font-mono text-slate-500">
@@ -945,7 +994,7 @@ export const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
                   -{stockCategoriesData.reduce((acc, c) => acc + c.dispensedThisMonth, 0)}
                 </td>
                 <td className="py-3.5 px-4 text-center bg-emerald-100/70 font-mono text-emerald-950 text-base">
-                  {stockCategoriesData.reduce((acc, c) => acc + c.currentStock, 0)} مستند
+                  {stockCategoriesData.reduce((acc, c) => acc + (isSelectedCurrentMonth ? c.currentStock : c.endingStock), 0)} مستند
                 </td>
                 <td colSpan={2} className="py-3.5 px-3 text-center text-xs text-slate-500">
                   الرصيد الفعلي بمكتب صحة سفلاق
@@ -1207,7 +1256,7 @@ export const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({
                 <td className="border border-black p-1.5 font-mono">{s.startingStock}</td>
                 <td className="border border-black p-1.5 font-mono">{s.receivedThisMonth}</td>
                 <td className="border border-black p-1.5 font-mono">{s.dispensedThisMonth}</td>
-                <td className="border border-black p-1.5 font-mono font-black bg-gray-100">{s.currentStock}</td>
+                <td className="border border-black p-1.5 font-mono font-black bg-gray-100">{isSelectedCurrentMonth ? s.currentStock : s.endingStock}</td>
                 <td className="border border-black p-1.5">{s.unit}</td>
               </tr>
             ))}

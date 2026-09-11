@@ -1041,7 +1041,7 @@ export function manualAdjustStock(
 
 export function saveOpeningBalances(
   record: OpeningBalanceRecord,
-  mode: 'recalculate' | 'override_current' = 'recalculate'
+  mode: 'recalculate' | 'override_current' | 'preserve_current' = 'preserve_current'
 ): AppDatabase {
   const db = getDatabase();
   const now = new Date().toISOString();
@@ -1063,7 +1063,7 @@ export function saveOpeningBalances(
       }
       if (mode === 'override_current') {
         stock.currentStock = itemData.openingQuantity;
-      } else {
+      } else if (mode === 'recalculate') {
         // Recalculate: current = opening + totalReceived - totalDispensed - damagedOrCancelled
         stock.currentStock =
           (itemData.openingQuantity || 0) +
@@ -1071,6 +1071,7 @@ export function saveOpeningBalances(
           (stock.totalDispensed || 0) -
           (stock.damagedOrCancelled || 0);
       }
+      // If mode === 'preserve_current', keep stock.currentStock intact as production source of truth
       stock.lastUpdated = now;
     }
   });
@@ -1250,6 +1251,17 @@ export function importDatabaseBackup(jsonString: string): boolean {
     if (!inspection.valid || !inspection.data) {
       return false;
     }
+
+    // Safety Snapshot: Save emergency backup of current state before applying restore
+    try {
+      const currentDb = getDatabase();
+      const backupKey = `saflaq_pre_restore_backup_${Date.now()}`;
+      localStorage.setItem(backupKey, JSON.stringify(currentDb));
+      localStorage.setItem('saflaq_latest_pre_restore_backup', JSON.stringify(currentDb));
+    } catch (snapErr) {
+      console.warn('Pre-restore safety snapshot warning:', snapErr);
+    }
+
     saveDatabase(inspection.data);
     return true;
   } catch (error) {

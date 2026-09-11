@@ -100,7 +100,7 @@ export const OpeningBalancesScreen: React.FC<OpeningBalancesScreenProps> = ({
   };
 
   const [items, setItems] = useState<Record<StockCategory, OpeningBalanceItem>>(initializeItemsState);
-  const [updateMode, setUpdateMode] = useState<'recalculate' | 'override_current'>('recalculate');
+  const [updateMode, setUpdateMode] = useState<'recalculate' | 'override_current' | 'preserve_current'>('preserve_current');
   const [savedSuccessToast, setSavedSuccessToast] = useState<string | null>(null);
   const [showPrintModal, setShowPrintModal] = useState<boolean>(false);
   const [showConfirmModal, setShowConfirmModal] = useState<boolean>(false);
@@ -595,8 +595,20 @@ export const OpeningBalancesScreen: React.FC<OpeningBalancesScreenProps> = ({
           </div>
 
           {/* Mode Selector */}
-          <div className="flex items-center gap-2 bg-white p-1.5 rounded-xl border border-slate-300 text-xs font-bold">
+          <div className="flex flex-wrap items-center gap-2 bg-white p-1.5 rounded-xl border border-slate-300 text-xs font-bold">
             <span className="text-slate-600 px-2">طريقة التطبيق:</span>
+            <button
+              type="button"
+              onClick={() => setUpdateMode('preserve_current')}
+              className={`px-3 py-1.5 rounded-lg transition cursor-pointer ${
+                updateMode === 'preserve_current'
+                  ? 'bg-emerald-700 text-white shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+              title="حفظ بيانات المحضر والمسلسلات مع الإبقاء على الرصيد الفعلي الحالي بالمخزن دون تغيير"
+            >
+              حفظ المحضر والإبقاء على الرصيد الفعلي
+            </button>
             <button
               type="button"
               onClick={() => setUpdateMode('recalculate')}
@@ -657,7 +669,9 @@ export const OpeningBalancesScreen: React.FC<OpeningBalancesScreenProps> = ({
                   : null;
 
                 // Preview current stock after mode
-                const previewStock = updateMode === 'override_current'
+                const previewStock = updateMode === 'preserve_current'
+                  ? (stock?.currentStock ?? 0)
+                  : updateMode === 'override_current'
                   ? item.openingQuantity
                   : ((item.openingQuantity || 0) + (stock?.totalReceived || 0) - (stock?.totalDispensed || 0) - (stock?.damagedOrCancelled || 0));
 
@@ -669,13 +683,18 @@ export const OpeningBalancesScreen: React.FC<OpeningBalancesScreenProps> = ({
 
                     <td className="p-3">
                       <div className="font-bold text-slate-900">{config.label}</div>
-                      <div className="flex items-center gap-1.5 mt-1">
+                      <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                         <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md border ${config.badgeColor}`}>
                           {config.groupName}
                         </span>
                         {serialCount !== null && (
-                          <span className="text-[11px] text-slate-500">
-                            (إجمالي المسلسل: {serialCount.toLocaleString('ar-EG')} ورقة)
+                          <span className={`text-[11px] font-semibold ${
+                            serialCount === item.openingQuantity
+                              ? 'text-emerald-700'
+                              : 'text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200'
+                          }`}>
+                            (إجمالي المسلسل: {serialCount.toLocaleString('ar-EG')} ورقة
+                            {serialCount !== item.openingQuantity && ` - فارق ${Math.abs(serialCount - (item.openingQuantity || 0))}`})
                           </span>
                         )}
                       </div>
@@ -865,7 +884,9 @@ export const OpeningBalancesScreen: React.FC<OpeningBalancesScreenProps> = ({
               <div className="flex justify-between">
                 <span className="text-slate-600">طريقة التطبيق المختارة:</span>
                 <span className="font-bold text-slate-900">
-                  {updateMode === 'recalculate'
+                  {updateMode === 'preserve_current'
+                    ? 'حفظ المحضر والإبقاء على الرصيد الفعلي الحالي'
+                    : updateMode === 'recalculate'
                     ? 'احتساب تلقائي مع الوارد والمنصرف'
                     : 'تعيين مباشر كرصيد حالي'}
                 </span>

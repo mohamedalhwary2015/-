@@ -253,6 +253,30 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
     });
   };
 
+  // Synchronize gender and automatically update selected health card
+  const handleGenderChange = (newGender: 'male' | 'female') => {
+    setGender(newGender);
+    setSelectedItems(prev => {
+      const maleQty = prev.health_cards_male || 0;
+      const femaleQty = prev.health_cards_female || 0;
+      if (newGender === 'male' && femaleQty > 0 && maleQty === 0) {
+        return {
+          ...prev,
+          health_cards_male: femaleQty,
+          health_cards_female: 0,
+        };
+      }
+      if (newGender === 'female' && maleQty > 0 && femaleQty === 0) {
+        return {
+          ...prev,
+          health_cards_female: maleQty,
+          health_cards_male: 0,
+        };
+      }
+      return prev;
+    });
+  };
+
   // Adjust quantity for a category
   const handleQuantityChange = (cat: StockCategory, delta: number) => {
     setSelectedItems(prev => {
@@ -301,6 +325,33 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
         .join('، ');
       if (!confirm(`تنبيه: الرصيد في المخزن غير كافٍ لـ: ${names}.\nهل تريد الاستمرار وإتمام الصرف بالرغم من ذلك؟`)) {
         return;
+      }
+    }
+
+    // Safety check: Gender vs Health Card consistency
+    if (gender === 'female' && (selectedItems.health_cards_male || 0) > 0) {
+      if (!confirm('تنبيه: لقد تم تحديد النوع "أنثى" ولكن البنود المختارة تشمل "بطاقات صحية ذكور".\nهل أنت متأكد من رغبتك في الاستمرار بهذه البيانات؟')) {
+        return;
+      }
+    }
+    if (gender === 'male' && (selectedItems.health_cards_female || 0) > 0) {
+      if (!confirm('تنبيه: لقد تم تحديد النوع "ذكر" ولكن البنود المختارة تشمل "بطاقات صحية إناث".\nهل أنت متأكد من رغبتك في الاستمرار بهذه البيانات؟')) {
+        return;
+      }
+    }
+
+    // Safety check: Death Registration vs Health cards or Birth certificates
+    if (dispenseEventType === 'قيد وفاة وتصريح دفن') {
+      const hasBirthOrHealth = itemsToDeduct.some(i =>
+        i.stockCategory === 'health_cards_male' ||
+        i.stockCategory === 'health_cards_female' ||
+        i.stockCategory === 'birth_certificates' ||
+        i.stockCategory === 'birth_notifications'
+      );
+      if (hasBirthOrHealth) {
+        if (!confirm('تنبيه هام: المعاملة محددة كـ "قيد وفاة وتصريح دفن" ولكن هناك بطاقات صحية أو شهادات ميلاد محددة للصرف.\nالوضع الطبيعي لقيد الوفاة لا يتضمن بطاقات صحية أو شهادات ميلاد.\nهل أنت متأكد من رغبتك في الاستمرار وصرف هذه المستندات؟')) {
+          return;
+        }
       }
     }
 
@@ -664,7 +715,29 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
                   <select
                     id="dispense-event-type-select"
                     value={dispenseEventType}
-                    onChange={(e) => setDispenseEventType(e.target.value)}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setDispenseEventType(val);
+                      if (val === 'قيد وفاة وتصريح دفن') {
+                        setSelectedItems(prev => ({
+                          ...prev,
+                          death_certificates: (prev.death_certificates || 0) > 0 ? prev.death_certificates : 1,
+                          birth_certificates: 0,
+                          birth_notifications: 0,
+                          health_cards_male: 0,
+                          health_cards_female: 0,
+                        }));
+                      } else if (val === 'قيد ولادة - إصدار أول مرة') {
+                        setSelectedItems(prev => ({
+                          ...prev,
+                          death_certificates: 0,
+                          death_notifications: 0,
+                          birth_certificates: (prev.birth_certificates || 0) > 0 ? prev.birth_certificates : 1,
+                          health_cards_male: gender === 'male' ? 1 : 0,
+                          health_cards_female: gender === 'female' ? 1 : 0,
+                        }));
+                      }
+                    }}
                     className="w-full pr-9 pl-3 py-2 rounded-xl border border-slate-300 focus:border-emerald-600 focus:ring-1 focus:ring-emerald-600 text-slate-900 font-bold bg-white"
                   >
                     <option value="قيد ولادة - إصدار أول مرة">قيد ولادة - إصدار أول مرة (تطعيمات ورعاية)</option>
@@ -784,7 +857,7 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
                 <div className="grid grid-cols-2 gap-2 mt-1">
                   <button
                     type="button"
-                    onClick={() => setGender('male')}
+                    onClick={() => handleGenderChange('male')}
                     className={`py-2 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer border ${
                       gender === 'male'
                         ? 'bg-blue-600 text-white border-blue-700 shadow-xs'
@@ -797,7 +870,7 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
 
                   <button
                     type="button"
-                    onClick={() => setGender('female')}
+                    onClick={() => handleGenderChange('female')}
                     className={`py-2 px-3 rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer border ${
                       gender === 'female'
                         ? 'bg-pink-600 text-white border-pink-700 shadow-xs'

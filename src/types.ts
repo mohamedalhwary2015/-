@@ -321,6 +321,9 @@ export interface SyncQueueItem {
   retryCount: number;                    // عدد محاولات الإرسال
   lastError?: string;                    // نص آخر خطأ إن وجد
   syncedAt?: string;                     // توقيت الاعتماد المركزي
+  version?: number;                      // رقم إصدار السجل لترتيب وتحديث العمليات بدقة
+  updatedAt?: string;                    // توقيت آخر تعديل للعملية
+  sequenceNumber?: number;               // الترتيب التسلسلي في الطابور
 }
 
 export interface IntegrityIssue {
