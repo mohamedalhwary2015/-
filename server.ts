@@ -7,7 +7,6 @@ import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import {
   DatabaseSchema,
   SyncTransactionItem,
@@ -17,14 +16,13 @@ import {
   CategoryStock
 } from './src/types.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const ROOT_DIR = process.cwd();
+const DATA_DIR = process.env.DATA_DIR || path.join(ROOT_DIR, 'data');
+const DB_FILE = path.join(DATA_DIR, 'database.json');
+const PROCESSED_KEYS_FILE = path.join(DATA_DIR, 'processedTransactions.json');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
-const DATA_DIR = path.join(__dirname, 'data');
-const DB_FILE = path.join(DATA_DIR, 'database.json');
-const PROCESSED_KEYS_FILE = path.join(DATA_DIR, 'processedTransactions.json');
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
@@ -137,8 +135,16 @@ function saveProcessedKeys(keys: Set<string>): void {
 }
 
 // ---------------------------------------------------------------------------
-// API Routes
+// API Routes & Health Checks
 // ---------------------------------------------------------------------------
+
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    office: 'مكتب صحة سفلاق',
+    timestamp: new Date().toISOString()
+  });
+});
 
 app.get('/api/health', (req, res) => {
   res.json({
@@ -439,7 +445,9 @@ app.post('/api/database/factory-reset', (req, res) => {
 // ---------------------------------------------------------------------------
 
 async function startServer() {
-  const isProduction = process.env.NODE_ENV === 'production' || fs.existsSync(path.join(__dirname, 'dist/index.html'));
+  const distPath = path.join(ROOT_DIR, 'dist');
+  const indexHtmlPath = path.join(distPath, 'index.html');
+  const isProduction = process.env.NODE_ENV === 'production' || fs.existsSync(indexHtmlPath);
 
   if (!isProduction) {
     try {
@@ -451,20 +459,30 @@ async function startServer() {
       app.use(vite.middlewares);
     } catch (e) {
       console.warn('Vite middleware could not be loaded, falling back to static files:', e);
-      app.use(express.static(path.join(__dirname, 'dist')));
+      app.use(express.static(distPath));
       app.get('*', (req, res) => {
-        res.sendFile(path.join(__dirname, 'dist/index.html'));
+        res.sendFile(indexHtmlPath);
       });
     }
   } else {
-    app.use(express.static(path.join(__dirname, 'dist')));
+    app.use(express.static(distPath));
     app.get('*', (req, res) => {
-      res.sendFile(path.join(__dirname, 'dist/index.html'));
+      res.sendFile(indexHtmlPath);
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[مكتب صحة سفلاق] الخادم يعمل الآن على المنفذ ${PORT}`);
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`[مكتب صحة سفلاق] الخادم يعمل الآن على المنفذ ${PORT} ومتاح على 0.0.0.0`);
+  });
+
+  process.on('SIGTERM', () => {
+    console.log('Received SIGTERM, shutting down gracefully...');
+    server.close(() => process.exit(0));
+  });
+
+  process.on('SIGINT', () => {
+    console.log('Received SIGINT, shutting down gracefully...');
+    server.close(() => process.exit(0));
   });
 }
 

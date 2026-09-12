@@ -14,3 +14,4 @@ data/*SNAPSHOT*
 # Environment and logs
 .env
 *.log
+bun.lock
