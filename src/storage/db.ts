@@ -16,16 +16,24 @@ import {
   Tombstone,
   ResetBoundary
 } from '../types';
+import { enqueueTransaction } from './syncManager';
 
 const STORAGE_KEY = 'saflaq_health_office_db_v2';
 const DEVICE_ID_KEY = 'saflaq_device_id';
 
+function getLocalStorage(): Storage | null {
+  if (typeof window !== 'undefined' && window.localStorage) return window.localStorage;
+  if (typeof localStorage !== 'undefined') return localStorage;
+  return null;
+}
+
 export function getDeviceId(): string {
-  if (typeof window === 'undefined') return 'server-host';
-  let deviceId = localStorage.getItem(DEVICE_ID_KEY);
+  const storage = getLocalStorage();
+  if (!storage) return 'server-host';
+  let deviceId = storage.getItem(DEVICE_ID_KEY);
   if (!deviceId) {
     deviceId = 'dev-' + Math.random().toString(36).substring(2, 9) + '-' + Date.now().toString(36);
-    localStorage.setItem(DEVICE_ID_KEY, deviceId);
+    storage.setItem(DEVICE_ID_KEY, deviceId);
   }
   return deviceId;
 }
@@ -101,16 +109,17 @@ let saveLock = false;
  * Loads database safely from localStorage without injecting mock data
  */
 export function loadDatabase(): DatabaseSchema {
-  if (typeof window === 'undefined') {
+  const storage = getLocalStorage();
+  if (!storage) {
     if (!memoryDb) memoryDb = createEmptyDatabase();
     return memoryDb;
   }
 
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = storage.getItem(STORAGE_KEY);
     if (!raw) {
       const fresh = createEmptyDatabase();
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(fresh));
+      storage.setItem(STORAGE_KEY, JSON.stringify(fresh));
       memoryDb = fresh;
       return fresh;
     }
@@ -184,8 +193,12 @@ export function saveDatabase(db: DatabaseSchema, triggerSync = true): DatabaseSc
     db.version = (db.version || 1) + 1;
     memoryDb = db;
 
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
+    const storage = getLocalStorage();
+    if (storage) {
+      storage.setItem(STORAGE_KEY, JSON.stringify(db));
+    }
+
+    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
       window.dispatchEvent(new CustomEvent('saflaq_db_changed', { detail: db }));
     }
 
@@ -237,7 +250,9 @@ export function addSupply(
     newValue: data.quantity
   });
 
-  return saveDatabase(db);
+  const saved = saveDatabase(db);
+  enqueueTransaction('SUPPLY_ADD', newSupply.id, newSupply.version, newSupply, newSupply.transactionId);
+  return saved;
 }
 
 export function updateSupply(
@@ -300,7 +315,9 @@ export function updateSupply(
     newValue: updated.quantity
   });
 
-  return saveDatabase(db);
+  const saved = saveDatabase(db);
+  enqueueTransaction('SUPPLY_UPDATE', updated.id, updated.version, updated, updated.transactionId);
+  return saved;
 }
 
 export function deleteSupply(id: string, deleterName?: string): DatabaseSchema {
@@ -340,7 +357,15 @@ export function deleteSupply(id: string, deleterName?: string): DatabaseSchema {
     previousValue: existing.quantity
   });
 
-  return saveDatabase(db);
+  const saved = saveDatabase(db);
+  enqueueTransaction(
+    'SUPPLY_DELETE',
+    existing.id,
+    (existing.version || 1) + 1,
+    { id: existing.id, category: existing.category, quantity: existing.quantity, transactionId: existing.transactionId },
+    existing.transactionId
+  );
+  return saved;
 }
 
 // ---------------------------------------------------------------------------
@@ -384,7 +409,9 @@ export function addDispense(
     newValue: data.quantity
   });
 
-  return saveDatabase(db);
+  const saved = saveDatabase(db);
+  enqueueTransaction('DISPENSE_ADD', newDispense.id, newDispense.version, newDispense, newDispense.transactionId);
+  return saved;
 }
 
 export function updateDispense(
@@ -444,7 +471,9 @@ export function updateDispense(
     performedBy: editorName || updated.dispensedBy || db.officeSettings.currentEmployee || 'غير محدد'
   });
 
-  return saveDatabase(db);
+  const saved = saveDatabase(db);
+  enqueueTransaction('DISPENSE_UPDATE', updated.id, updated.version, updated, updated.transactionId);
+  return saved;
 }
 
 export function deleteDispense(id: string, deleterName?: string): DatabaseSchema {
@@ -484,7 +513,15 @@ export function deleteDispense(id: string, deleterName?: string): DatabaseSchema
     previousValue: existing.quantity
   });
 
-  return saveDatabase(db);
+  const saved = saveDatabase(db);
+  enqueueTransaction(
+    'DISPENSE_DELETE',
+    existing.id,
+    (existing.version || 1) + 1,
+    { id: existing.id, category: existing.category, quantity: existing.quantity, transactionId: existing.transactionId },
+    existing.transactionId
+  );
+  return saved;
 }
 
 // ---------------------------------------------------------------------------
@@ -518,7 +555,9 @@ export function addLateRegistration(
     performedBy: data.staffName || db.officeSettings.currentEmployee || 'غير محدد'
   });
 
-  return saveDatabase(db);
+  const saved = saveDatabase(db);
+  enqueueTransaction('LATE_REG_ADD', newRecord.id, newRecord.version, newRecord, newRecord.transactionId);
+  return saved;
 }
 
 export function updateLateRegistration(
@@ -550,7 +589,9 @@ export function updateLateRegistration(
     performedBy: editorName || updated.staffName || db.officeSettings.currentEmployee || 'غير محدد'
   });
 
-  return saveDatabase(db);
+  const saved = saveDatabase(db);
+  enqueueTransaction('LATE_REG_UPDATE', updated.id, updated.version, updated, updated.transactionId);
+  return saved;
 }
 
 export function deleteLateRegistration(id: string, deleterName?: string): DatabaseSchema {
@@ -579,7 +620,15 @@ export function deleteLateRegistration(id: string, deleterName?: string): Databa
     performedBy: deleterName || existing.staffName || db.officeSettings.currentEmployee || 'غير محدد'
   });
 
-  return saveDatabase(db);
+  const saved = saveDatabase(db);
+  enqueueTransaction(
+    'LATE_REG_DELETE',
+    existing.id,
+    (existing.version || 1) + 1,
+    { id: existing.id, transactionId: existing.transactionId },
+    existing.transactionId
+  );
+  return saved;
 }
 
 // ---------------------------------------------------------------------------
@@ -694,12 +743,21 @@ export function executeFactoryReset(resetBy: string = 'مدير النظام'): 
     performedBy: resetBy || 'غير محدد'
   }];
 
-  if (typeof window !== 'undefined') {
-    // Wipe local queues and storage
-    localStorage.removeItem('saflaq_sync_queue');
-    localStorage.removeItem('saflaq_sync_log');
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(empty));
+  const storage = getLocalStorage();
+  if (storage) {
+    // Wipe local queues and sync status (Rules 18 & 19 - Full Wipe)
+    storage.removeItem('saflaq_durable_sync_queue_v2');
+    storage.removeItem('saflaq_sync_queue');
+    storage.removeItem('saflaq_sync_log');
+    storage.removeItem('saflaq_last_sync_status');
+    storage.setItem(STORAGE_KEY, JSON.stringify(empty));
+  }
+
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
     window.dispatchEvent(new CustomEvent('saflaq_db_changed', { detail: empty }));
+    window.dispatchEvent(new CustomEvent('saflaq_sync_status_changed', {
+      detail: { status: 'idle', lastSyncTime: null, pendingCount: 0, lastError: null }
+    }));
   }
 
   memoryDb = empty;

@@ -25,13 +25,20 @@ export interface SyncStatusInfo {
   lastError: string | null;
 }
 
+function getStorage(): Storage | null {
+  if (typeof window !== 'undefined' && window.localStorage) return window.localStorage;
+  if (typeof localStorage !== 'undefined') return localStorage;
+  return null;
+}
+
 /**
  * Loads durable queue from persistent storage
  */
 export function getPendingQueue(): SyncTransactionItem[] {
-  if (typeof window === 'undefined') return [];
+  const storage = getStorage();
+  if (!storage) return [];
   try {
-    const raw = localStorage.getItem(SYNC_QUEUE_KEY);
+    const raw = storage.getItem(SYNC_QUEUE_KEY);
     if (!raw) return [];
     return JSON.parse(raw);
   } catch (e) {
@@ -44,11 +51,25 @@ export function getPendingQueue(): SyncTransactionItem[] {
  * Saves durable queue to persistent storage
  */
 export function savePendingQueue(queue: SyncTransactionItem[]): void {
-  if (typeof window === 'undefined') return;
+  const storage = getStorage();
+  if (!storage) return;
   try {
-    localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(queue));
+    storage.setItem(SYNC_QUEUE_KEY, JSON.stringify(queue));
   } catch (e) {
     console.error('Error saving sync queue:', e);
+  }
+}
+
+/**
+ * Clears pending queue completely
+ */
+export function clearPendingQueue(): void {
+  const storage = getStorage();
+  if (!storage) return;
+  try {
+    storage.removeItem(SYNC_QUEUE_KEY);
+  } catch (e) {
+    console.error('Error clearing sync queue:', e);
   }
 }
 
@@ -61,13 +82,13 @@ export function enqueueTransaction(
   version: number,
   payload: any,
   transactionId: string
-): void {
+): SyncTransactionItem {
   const queue = getPendingQueue();
   const operationKey = `${operationType}:${recordId}:${version}`;
   const deviceId = getDeviceId();
   const now = new Date().toISOString();
 
-  // If already in queue, replace with newer version
+  // If already in queue with identical key, replace in place
   const existingIdx = queue.findIndex(q => q.operationKey === operationKey);
   const item: SyncTransactionItem = {
     transactionId,
@@ -87,6 +108,12 @@ export function enqueueTransaction(
   }
 
   savePendingQueue(queue);
+
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('saflaq_queue_updated', { detail: { queueLength: queue.length } }));
+  }
+
+  return item;
 }
 
 /**
@@ -94,12 +121,13 @@ export function enqueueTransaction(
  */
 export function getSyncStatus(): SyncStatusInfo {
   const queue = getPendingQueue();
-  if (typeof window === 'undefined') {
+  const storage = getStorage();
+  if (!storage) {
     return { status: 'idle', lastSyncTime: null, pendingCount: queue.length, lastError: null };
   }
 
   try {
-    const raw = localStorage.getItem(LAST_SYNC_STATUS_KEY);
+    const raw = storage.getItem(LAST_SYNC_STATUS_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
       return { ...parsed, pendingCount: queue.length };
@@ -110,7 +138,7 @@ export function getSyncStatus(): SyncStatusInfo {
 }
 
 function updateSyncStatus(status: 'idle' | 'syncing' | 'synced' | 'failed', error: string | null = null) {
-  if (typeof window === 'undefined') return;
+  const storage = getStorage();
   const queue = getPendingQueue();
   const info: SyncStatusInfo = {
     status,
@@ -118,8 +146,12 @@ function updateSyncStatus(status: 'idle' | 'syncing' | 'synced' | 'failed', erro
     pendingCount: queue.length,
     lastError: error
   };
-  localStorage.setItem(LAST_SYNC_STATUS_KEY, JSON.stringify(info));
-  window.dispatchEvent(new CustomEvent('saflaq_sync_status_changed', { detail: info }));
+  if (storage) {
+    storage.setItem(LAST_SYNC_STATUS_KEY, JSON.stringify(info));
+  }
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('saflaq_sync_status_changed', { detail: info }));
+  }
 }
 
 let isSyncRunning = false;
@@ -219,15 +251,46 @@ export async function executeAutoSync(
  * Merges server data into local database with version checks and tombstone enforcement
  * RULE 3: PROTECTS currentStock from arbitrary overwrite!
  */
-function mergeServerDataSafely(localDb: DatabaseSchema, serverData: Partial<DatabaseSchema>): void {
+export function mergeServerDataSafely(localDb: DatabaseSchema, serverData: Partial<DatabaseSchema>): DatabaseSchema {
   let changed = false;
 
-  // 1. Tombstones merge
+  // 1. Tombstones merge & local active records cleanup (Rule 9 & Rule 22: prevents resurrection)
   const localTombstones = new Set(localDb.tombstones.map(t => t.recordId));
   for (const st of serverData.tombstones || []) {
     if (!localTombstones.has(st.recordId)) {
       localDb.tombstones.push(st);
       localTombstones.add(st.recordId);
+      changed = true;
+    }
+
+    // If local terminal still holds this deleted record, remove it and adjust stock
+    const dspIdx = localDb.dispenses.findIndex(d => d.id === st.recordId);
+    if (dspIdx >= 0) {
+      const deletedDsp = localDb.dispenses[dspIdx];
+      const stock = localDb.stocks[deletedDsp.category];
+      if (stock) {
+        stock.currentStock += deletedDsp.quantity;
+        stock.totalDispensed -= deletedDsp.quantity;
+      }
+      localDb.dispenses.splice(dspIdx, 1);
+      changed = true;
+    }
+
+    const supIdx = localDb.supplies.findIndex(s => s.id === st.recordId);
+    if (supIdx >= 0) {
+      const deletedSup = localDb.supplies[supIdx];
+      const stock = localDb.stocks[deletedSup.category];
+      if (stock) {
+        stock.currentStock -= deletedSup.quantity;
+        stock.totalReceived -= deletedSup.quantity;
+      }
+      localDb.supplies.splice(supIdx, 1);
+      changed = true;
+    }
+
+    const lateIdx = localDb.lateRegistrations.findIndex(r => r.id === st.recordId);
+    if (lateIdx >= 0) {
+      localDb.lateRegistrations.splice(lateIdx, 1);
       changed = true;
     }
   }
@@ -250,13 +313,27 @@ function mergeServerDataSafely(localDb: DatabaseSchema, serverData: Partial<Data
       }
       changed = true;
     } else if ((sSup.version || 1) > (existing.version || 1)) {
-      // Newer version from server
-      const oldQty = existing.quantity;
-      const diff = sSup.quantity - oldQty;
-      const stock = localDb.stocks[sSup.category];
-      if (stock) {
-        stock.currentStock += diff;
-        stock.totalReceived += diff;
+      // Newer version from server: handle category change or quantity difference
+      if (existing.category === sSup.category) {
+        const oldQty = existing.quantity;
+        const diff = sSup.quantity - oldQty;
+        const stock = localDb.stocks[sSup.category];
+        if (stock) {
+          stock.currentStock += diff;
+          stock.totalReceived += diff;
+        }
+      } else {
+        // Category changed on server! Revert old, apply new!
+        const oldStock = localDb.stocks[existing.category];
+        if (oldStock) {
+          oldStock.currentStock -= existing.quantity;
+          oldStock.totalReceived -= existing.quantity;
+        }
+        const newStock = localDb.stocks[sSup.category];
+        if (newStock) {
+          newStock.currentStock += sSup.quantity;
+          newStock.totalReceived += sSup.quantity;
+        }
       }
       Object.assign(existing, sSup, { syncStatus: 'synced' });
       changed = true;
@@ -278,12 +355,26 @@ function mergeServerDataSafely(localDb: DatabaseSchema, serverData: Partial<Data
       }
       changed = true;
     } else if ((sDsp.version || 1) > (existing.version || 1)) {
-      const oldQty = existing.quantity;
-      const diff = sDsp.quantity - oldQty;
-      const stock = localDb.stocks[sDsp.category];
-      if (stock) {
-        stock.currentStock -= diff;
-        stock.totalDispensed += diff;
+      if (existing.category === sDsp.category) {
+        const oldQty = existing.quantity;
+        const diff = sDsp.quantity - oldQty;
+        const stock = localDb.stocks[sDsp.category];
+        if (stock) {
+          stock.currentStock -= diff;
+          stock.totalDispensed += diff;
+        }
+      } else {
+        // Category changed on server! Refund old, deduct from new!
+        const oldStock = localDb.stocks[existing.category];
+        if (oldStock) {
+          oldStock.currentStock += existing.quantity;
+          oldStock.totalDispensed -= existing.quantity;
+        }
+        const newStock = localDb.stocks[sDsp.category];
+        if (newStock) {
+          newStock.currentStock -= sDsp.quantity;
+          newStock.totalDispensed += sDsp.quantity;
+        }
       }
       Object.assign(existing, sDsp, { syncStatus: 'synced' });
       changed = true;
@@ -308,4 +399,5 @@ function mergeServerDataSafely(localDb: DatabaseSchema, serverData: Partial<Data
   if (changed) {
     saveDatabase(localDb, false);
   }
+  return localDb;
 }

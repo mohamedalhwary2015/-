@@ -214,7 +214,7 @@ app.post('/api/sync/transactions', (req, res) => {
         case 'SUPPLY_ADD': {
           const exists = serverDb.supplies.some(s => s.id === recordId || s.transactionId === transactionId);
           if (!exists) {
-            serverDb.supplies.unshift(payload);
+            serverDb.supplies.unshift({ ...payload, syncStatus: 'synced' });
             const stock = serverDb.stocks[payload.category as StockCategory];
             if (stock) {
               stock.currentStock += payload.quantity;
@@ -229,13 +229,27 @@ app.post('/api/sync/transactions', (req, res) => {
           if (idx >= 0) {
             const old = serverDb.supplies[idx];
             if ((version || 1) >= (old.version || 1)) {
-              const diff = payload.quantity - old.quantity;
-              const stock = serverDb.stocks[payload.category as StockCategory];
-              if (stock) {
-                stock.currentStock += diff;
-                stock.totalReceived += diff;
+              if (old.category === payload.category) {
+                const diff = payload.quantity - old.quantity;
+                const stock = serverDb.stocks[payload.category as StockCategory];
+                if (stock) {
+                  stock.currentStock += diff;
+                  stock.totalReceived += diff;
+                }
+              } else {
+                // Category changed on server: revert old category, apply new category
+                const oldStock = serverDb.stocks[old.category as StockCategory];
+                if (oldStock) {
+                  oldStock.currentStock -= old.quantity;
+                  oldStock.totalReceived -= old.quantity;
+                }
+                const newStock = serverDb.stocks[payload.category as StockCategory];
+                if (newStock) {
+                  newStock.currentStock += payload.quantity;
+                  newStock.totalReceived += payload.quantity;
+                }
               }
-              serverDb.supplies[idx] = payload;
+              serverDb.supplies[idx] = { ...payload, syncStatus: 'synced' };
               modified = true;
             }
           }
@@ -251,6 +265,9 @@ app.post('/api/sync/transactions', (req, res) => {
               stock.totalReceived -= existing.quantity;
             }
             serverDb.supplies.splice(idx, 1);
+            modified = true;
+          }
+          if (!tombstoneSet.has(recordId)) {
             serverDb.tombstones.push({
               recordId,
               recordType: 'supply',
@@ -266,7 +283,7 @@ app.post('/api/sync/transactions', (req, res) => {
         case 'DISPENSE_ADD': {
           const exists = serverDb.dispenses.some(d => d.id === recordId || d.transactionId === transactionId);
           if (!exists) {
-            serverDb.dispenses.unshift(payload);
+            serverDb.dispenses.unshift({ ...payload, syncStatus: 'synced' });
             const stock = serverDb.stocks[payload.category as StockCategory];
             if (stock) {
               stock.currentStock -= payload.quantity;
@@ -281,13 +298,27 @@ app.post('/api/sync/transactions', (req, res) => {
           if (idx >= 0) {
             const old = serverDb.dispenses[idx];
             if ((version || 1) >= (old.version || 1)) {
-              const diff = payload.quantity - old.quantity;
-              const stock = serverDb.stocks[payload.category as StockCategory];
-              if (stock) {
-                stock.currentStock -= diff;
-                stock.totalDispensed += diff;
+              if (old.category === payload.category) {
+                const diff = payload.quantity - old.quantity;
+                const stock = serverDb.stocks[payload.category as StockCategory];
+                if (stock) {
+                  stock.currentStock -= diff;
+                  stock.totalDispensed += diff;
+                }
+              } else {
+                // Category changed on server: refund old category, deduct from new category
+                const oldStock = serverDb.stocks[old.category as StockCategory];
+                if (oldStock) {
+                  oldStock.currentStock += old.quantity;
+                  oldStock.totalDispensed -= old.quantity;
+                }
+                const newStock = serverDb.stocks[payload.category as StockCategory];
+                if (newStock) {
+                  newStock.currentStock -= payload.quantity;
+                  newStock.totalDispensed += payload.quantity;
+                }
               }
-              serverDb.dispenses[idx] = payload;
+              serverDb.dispenses[idx] = { ...payload, syncStatus: 'synced' };
               modified = true;
             }
           }
@@ -303,6 +334,9 @@ app.post('/api/sync/transactions', (req, res) => {
               stock.totalDispensed -= existing.quantity;
             }
             serverDb.dispenses.splice(idx, 1);
+            modified = true;
+          }
+          if (!tombstoneSet.has(recordId)) {
             serverDb.tombstones.push({
               recordId,
               recordType: 'dispense',
@@ -318,7 +352,7 @@ app.post('/api/sync/transactions', (req, res) => {
         case 'LATE_REG_ADD': {
           const exists = serverDb.lateRegistrations.some(r => r.id === recordId || r.transactionId === transactionId);
           if (!exists) {
-            serverDb.lateRegistrations.unshift(payload);
+            serverDb.lateRegistrations.unshift({ ...payload, syncStatus: 'synced' });
             modified = true;
           }
           break;
@@ -326,8 +360,11 @@ app.post('/api/sync/transactions', (req, res) => {
         case 'LATE_REG_UPDATE': {
           const idx = serverDb.lateRegistrations.findIndex(r => r.id === recordId);
           if (idx >= 0) {
-            serverDb.lateRegistrations[idx] = payload;
-            modified = true;
+            const old = serverDb.lateRegistrations[idx];
+            if ((version || 1) >= (old.version || 1)) {
+              serverDb.lateRegistrations[idx] = { ...payload, syncStatus: 'synced' };
+              modified = true;
+            }
           }
           break;
         }
@@ -335,6 +372,9 @@ app.post('/api/sync/transactions', (req, res) => {
           const idx = serverDb.lateRegistrations.findIndex(r => r.id === recordId);
           if (idx >= 0) {
             serverDb.lateRegistrations.splice(idx, 1);
+            modified = true;
+          }
+          if (!tombstoneSet.has(recordId)) {
             serverDb.tombstones.push({
               recordId,
               recordType: 'late_registration',

@@ -22,15 +22,40 @@ export function useAutoSync(db: DatabaseSchema) {
     return await executeAutoSync(dbRef.current, trigger);
   }, []);
 
-  // Periodic background check if online
+  // Background sync: periodic, on network reconnect, and on queue changes
   useEffect(() => {
+    let debounceTimer: any = null;
+
+    const handleQueueUpdated = () => {
+      if (navigator.onLine) {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          triggerSync('change');
+        }, 1000);
+      }
+    };
+
+    const handleOnline = () => {
+      if (getPendingQueue().length > 0) {
+        triggerSync('change');
+      }
+    };
+
+    window.addEventListener('saflaq_queue_updated' as any, handleQueueUpdated);
+    window.addEventListener('online', handleOnline);
+
     const interval = setInterval(() => {
       if (navigator.onLine && getPendingQueue().length > 0) {
         triggerSync('auto');
       }
     }, 30000); // every 30 seconds
 
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(debounceTimer);
+      window.removeEventListener('saflaq_queue_updated' as any, handleQueueUpdated);
+      window.removeEventListener('online', handleOnline);
+      clearInterval(interval);
+    };
   }, [triggerSync]);
 
   return {
