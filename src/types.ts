@@ -1,374 +1,276 @@
 /**
- * Data structures for Saflaq Health Office (مكتب صحة سفلاق)
+ * مكتب صحة سفلاق - منظومة تسجيل الأرصدة وساقط القيد
+ * Types & Schema Definitions
  */
 
-export type StockCategory = 
-  | 'birth_certificates'    // شهادات الميلاد
-  | 'birth_notifications'   // بلاغات الميلاد
-  | 'death_certificates'    // شهادات الوفاة
-  | 'death_notifications'   // بلاغات الوفاة
-  | 'health_cards_male'     // بطاقات صحية ذكور
-  | 'health_cards_female'   // بطاقات صحية إناث
-  | 'late_reg_under_year'   // استمارات ساقط قيد أقل من عام
-  | 'late_reg_over_year';    // استمارات ساقط قيد أكبر من عام
+export type StockCategory =
+  | 'birth_certificates'      // شهادات ميلاد
+  | 'birth_notifications'     // بلاغات ميلاد
+  | 'death_certificates'      // شهادات وفاة
+  | 'death_notifications'     // بلاغات وفاة
+  | 'health_cards_male'       // بطاقات صحية (ذكور)
+  | 'health_cards_female';    // بطاقات صحية (إناث)
 
-export const STOCK_CATEGORIES_INFO: Record<StockCategory, { name: string; category: 'birth' | 'death' | 'health_card' | 'late_registration'; unit: string; minThreshold: number }> = {
-  birth_certificates: { name: 'شهادات الميلاد الورقية الرسمية', category: 'birth', unit: 'شهادة / استمارة', minThreshold: 30 },
-  birth_notifications: { name: 'بلاغات الميلاد (إخطار تبليغ)', category: 'birth', unit: 'أصل بلاغ', minThreshold: 30 },
-  death_certificates: { name: 'شهادات الوفاة الورقية الرسمية', category: 'death', unit: 'شهادة / استمارة', minThreshold: 20 },
-  death_notifications: { name: 'بلاغات الوفاة (إخطار تبليغ)', category: 'death', unit: 'أصل بلاغ', minThreshold: 20 },
-  health_cards_male: { name: 'بطاقات صحية ذكور (تطعيمات ورعاية)', category: 'health_card', unit: 'بطاقة', minThreshold: 25 },
-  health_cards_female: { name: 'بطاقات صحية إناث (تطعيمات ورعاية)', category: 'health_card', unit: 'بطاقة', minThreshold: 25 },
-  late_reg_under_year: { name: 'استمارات ساقط قيد (أقل من عام)', category: 'late_registration', unit: 'استمارة / نموذج', minThreshold: 15 },
-  late_reg_over_year: { name: 'استمارات ساقط قيد (أكبر من عام)', category: 'late_registration', unit: 'استمارة / نموذج', minThreshold: 15 },
+export const STOCK_CATEGORIES: StockCategory[] = [
+  'birth_certificates',
+  'birth_notifications',
+  'death_certificates',
+  'death_notifications',
+  'health_cards_male',
+  'health_cards_female'
+];
+
+export const CATEGORY_LABELS: Record<StockCategory, string> = {
+  birth_certificates: 'شهادات ميلاد مميكنة',
+  birth_notifications: 'بلاغات ميلاد (دفاتر ورقية)',
+  death_certificates: 'شهادات وفاة',
+  death_notifications: 'بلاغات وفاة (دفاتر ورقية)',
+  health_cards_male: 'بطاقات صحية (ذكور)',
+  health_cards_female: 'بطاقات صحية (إناث)'
 };
 
-export interface SerialRange {
-  id?: string;
-  bookNumber?: string;  // رقم الدفتر (مثلاً: دفتر 1)
-  from: string;        // من مسلسل
-  to: string;          // إلى مسلسل
-  count?: number;      // عدد المستندات
-  notes?: string;      // ملاحظات المسلسل
-}
+export const CATEGORY_SHORT_LABELS: Record<StockCategory, string> = {
+  birth_certificates: 'شهادات ميلاد',
+  birth_notifications: 'بلاغات ميلاد',
+  death_certificates: 'شهادات وفاة',
+  death_notifications: 'بلاغات وفاة',
+  health_cards_male: 'بطاقات ذكور',
+  health_cards_female: 'بطاقات إناث'
+};
 
-export interface StockItem {
-  id: StockCategory;
-  name: string;
-  category: 'birth' | 'death' | 'health_card' | 'late_registration';
-  openingStock?: number;        // الرصيد الافتتاحي في بداية الدورة
-  openingSerialFrom?: string;   // من مسلسل افتتاحي
-  openingSerialTo?: string;     // إلى مسلسل افتتاحي
-  openingSerialRanges?: SerialRange[]; // دعم أكثر من تسلسل / دفاتر متعددة
-  currentStock: number;
-  totalReceived: number;
-  totalDispensed: number;
-  damagedOrCancelled: number;
-  minThreshold: number; // حد التنبيه
-  unit: string;
+export type TransactionType =
+  | 'birth'                 // قيد ميلاد
+  | 'death'                 // قيد وفاة
+  | 'health_card_male'      // صرف بطاقة صحية ذكور
+  | 'health_card_female'    // صرف بطاقة صحية إناث
+  | 'birth_notification'    // بلاغ ميلاد
+  | 'death_notification'    // بلاغ وفاة
+  | 'replacement'           // بدل فاقد/تالف
+  | 'other';                // أخرى
+
+export const TRANSACTION_TYPE_LABELS: Record<TransactionType, string> = {
+  birth: 'قيد ميلاد (شهادة)',
+  death: 'قيد وفاة (شهادة)',
+  health_card_male: 'بطاقة صحية (ذكور)',
+  health_card_female: 'بطاقة صحية (إناث)',
+  birth_notification: 'بلاغ ميلاد ورقي',
+  death_notification: 'بلاغ وفاة ورقي',
+  replacement: 'استخراج بدل فاقد',
+  other: 'معاملة أخرى'
+};
+
+export type AdjustmentReason =
+  | 'inventory_count'       // جرد فعلي للخزينة
+  | 'book_reconciliation'   // تسوية ومطابقة دفترية
+  | 'damaged'               // تالف ومستهلك رسمياً
+  | 'lost'                  // مفقود أو استبعاد رسمي
+  | 'administrative_entry'; // تصحيح إداري معتمد
+
+export const ADJUSTMENT_REASON_LABELS: Record<AdjustmentReason, string> = {
+  inventory_count: 'جرد فعلي بالخزينة',
+  book_reconciliation: 'تسوية ومطابقة دفترية',
+  damaged: 'تالف ومثبت بمحضر إتلاف',
+  lost: 'مفقود أو استبعاد بمحضر',
+  administrative_entry: 'تصحيح إداري معتمد'
+};
+
+export interface CategoryStock {
+  category: StockCategory;
+  currentStock: number;       // الرصيد الفعلي المحمي تشغيلياً (ممنوع تغييره تلقائياً)
+  openingStock: number;       // رصيد البداية المعتمد
+  totalReceived: number;      // إجمالي التوريدات الفعلية المؤكدة
+  totalDispensed: number;     // إجمالي المنصرف الفعلي المؤكد
+  damagedOrCancelled: number; // إجمالي التالف أو الملغى بمحاضر
+  theoreticalStock: number;   // الرصيد النظري للتحقق فقط = opening + received - dispensed - damaged
   lastUpdated: string;
 }
 
 export interface SupplyTransaction {
-  id: string;
-  stockCategory: StockCategory;
-  date: string;
-  quantity: number;
-  documentNumber: string; // رقم إذن التوريد / المستند
-  serialFrom?: string;    // من مسلسل
-  serialTo?: string;      // إلى مسلسل
-  supplierName: string;   // اسم جهة التوريد / الموظف المورد
-  receivedBy: string;     // اسم المستلم
-  notes?: string;
-  createdAt: string;
-
-  // حقول المعاملات والمزامنة التراكمية (Additive Sync Fields)
-  transactionId?: string;           // معرف الحركة العالمي الفريد Global Unique Transaction ID
-  deviceId?: string;                // معرف الجهاز المنفذ للحركة Device ID
-  syncStatus?: 'synced' | 'pending'; // حالة المزامنة
-  syncedAt?: string;                // توقيت الاعتماد المركزي
-  isOfflineCreated?: boolean;       // تم إنشاؤها أوفلاين
-  version?: number;                 // رقم إصدار السجل
+  id: string;                 // معرف السجل
+  transactionId: string;      // المعرف الثابت للعملية (Idempotency Key)
+  documentNumber: string;     // رقم إذن الصرف / التوريد
+  date: string;               // تاريخ التوريد
+  category: StockCategory;    // الصنف
+  quantity: number;           // الكمية
+  receivedBy: string;         // الموظف المستلم (الافتراضي: غير محدد)
+  supplierSource: string;     // جهة التوريد (مخزن الإدارة الصحية بساقلتة، إلخ)
+  notes?: string;             // ملاحظات
+  version: number;            // رقم الإصدار للمزامنة الموثوقة
+  updatedAt: string;          // وقت التعديل
+  isDeleted?: boolean;        // علامة الحذف
+  deletedAt?: string;         // تاريخ الحذف
+  syncStatus?: 'pending' | 'synced' | 'unconfirmed';
 }
-
-export type DispenseType = 
-  | 'birth_certificate'   // صرف شهادة ميلاد منفردة
-  | 'birth_notification'  // صرف بلاغ ميلاد منفرد
-  | 'health_card_male'    // صرف بطاقة صحية ذكور
-  | 'health_card_female'  // صرف بطاقة صحية إناث
-  | 'death_certificate'   // صرف شهادة وفاة منفردة
-  | 'death_notification'  // صرف بلاغ وفاة منفرد
-  | 'late_reg_under_year' // صرف استمارة ساقط قيد أقل من عام
-  | 'late_reg_over_year'  // صرف استمارة ساقط قيد أكبر من عام
-  | 'multiple'            // صرف مجمع / متعدد باختيار الموظف
-  | 'birth_male'          // صرف قديم (توافق)
-  | 'birth_female'        // صرف قديم (توافق)
-  | 'death'               // صرف قديم (توافق)
-  | 'custom';             // صرف مخصص
 
 export interface DispenseRecord {
-  id: string;
-  dispenseType: DispenseType;
-  date: string; // YYYY-MM-DD
-  time: string; // HH:mm
-  
-  // بيانات الصرف المطلوبة بدقة من المستخدم
-  beneficiaryName: string;          // اسم المنصرف له / المستلم
-  certificateNumber?: string;       // خانة كتابة رقم الشهادة (إن وجد)
-  notes?: string;                   // خانة للملاحظات
-  
-  // تفاصيل البنود المصروفة فعلياً (لكل بند رصيد مستقل)
-  itemsDeducted: {
-    stockCategory: StockCategory;
-    quantity: number;
-  }[];
-  
-  dispensedBy: string;              // اسم الموظف القائم بالصرف
-  createdAt: string;
-
-  // حقول تكميلية واختيارية للتوافق الكامل مع السجلات السابقة
-  healthCardReceiptNumber?: string; // رقم إيصال توريد البطاقات الصحية
-  dispenseEventType?: string;       // نوع واقعة الصرف (قيد ولادة - أول مرة / بدل فاقد / بدل تالف / قيد وفاة...)
-  paymentAmount?: number;           // الرسوم المحصلة بالجنيه
-  notificationNumber?: string;      // رقم البلاغ أو الإخطار
-  gender?: 'male' | 'female';
-  eventDate?: string;
-  fatherName?: string;
-  fatherNationalId?: string;
-  motherName?: string;
-  motherNationalId?: string;
-  address?: string;
-  reporterName?: string;
-  reporterRelation?: string;
-  reporterPhone?: string;
-  beneficiaryNationalId?: string;
-  enteredIntoGovSystem?: boolean; // هل تم الإدخال على منظومة الميكنة 10.1.80.50
-  govSystemEntryDate?: string;    // تاريخ الإدخال على المنظومة
-  govSystemRefNumber?: string;    // رقم القيد أو الإثبات بالمنظومة
-
-  // حقول المعاملات والمزامنة التراكمية (Additive Sync Fields)
-  transactionId?: string;           // معرف الحركة العالمي الفريد Global Unique Transaction ID
-  deviceId?: string;                // معرف الجهاز المنفذ للحركة Device ID
-  syncStatus?: 'synced' | 'pending'; // حالة المزامنة
-  syncedAt?: string;                // توقيت الاعتماد المركزي
-  isOfflineCreated?: boolean;       // تم إنشاؤها أوفلاين
-  version?: number;                 // رقم إصدار السجل
-  updatedAt?: string;               // توقيت آخر تعديل للسجل
-}
-
-export type LateRegType = 'birth' | 'death'; // ساقط قيد ميلاد / ساقط قيد وفاة
-
-export type LateRegStatus = 
-  | 'under_review'   // قيد المراجعة والفحص بمكتب الصحة
-  | 'medical_comm'   // محال للجنة الطبية المختصة
-  | 'civil_registry' // أرسل للسجل المدني بساقلتة
-  | 'approved'       // تم الاعتماد واستخراج القيد
-  | 'rejected';      // مرفوض لعدم استيفاء المستندات
-
-export interface LateRegTrackingStep {
-  id?: string;
-  status: LateRegStatus;
-  date: string;                     // تاريخ الإجراء (YYYY-MM-DD)
-  time?: string;                     // وقت الإجراء (HH:mm)
-  actionTitle: string;              // عنوان المرحلة أو الإجراء
-  officialDocNumber?: string;       // رقم الصادر / رقم الخطاب / رقم القيد
-  committeeDecision?: string;       // قرار اللجنة الطبية (السن المقدر، إلخ)
-  notes?: string;                   // ملاحظات الإجراء
-  performedBy: string;              // اسم الموظف المنفذ
+  id: string;                 // معرف السجل
+  transactionId: string;      // المعرف الثابت للعملية
+  date: string;               // تاريخ المعاملة
+  citizenName: string;        // اسم المواطن / ولي الأمر / المبلغ
+  nationalId?: string;        // الرقم القومي
+  childOrDeceasedName?: string; // اسم المولود أو المتوفى
+  transactionType: TransactionType; // نوع المعاملة
+  gender?: 'ذكر' | 'أنثى' | 'غير محدد'; // النوع
+  category: StockCategory;    // الصنف المصروف
+  quantity: number;           // الكمية (عادة 1)
+  dispensedBy: string;        // الموظف القائم بالصرف (الافتراضي: غير محدد)
+  collectedAmount: number;    // المبلغ المحصل / المورد (بالجنيه)
+  receiptNumber?: string;     // رقم الإيصال (33 ع.ح أو قسيمة السداد)
+  serialNumber?: string;      // الرقم المسلسل للمستند أو الدفتر
+  notes?: string;             // ملاحظات
+  version: number;            // رقم الإصدار
+  updatedAt: string;          // وقت التعديل
+  isDeleted?: boolean;        // علامة الحذف
+  deletedAt?: string;         // تاريخ الحذف
+  syncStatus?: 'pending' | 'synced' | 'unconfirmed';
 }
 
 export interface LateRegistrationRecord {
   id: string;
-  formNumber: string;            // رقم استمارة ساقط القيد
-  submissionDate: string;        // تاريخ تقديم الاستمارة
-  type: LateRegType;             // نوع ساقط القيد (ميلاد / وفاة)
-  ageCategory?: 'under_one_year' | 'over_one_year'; // فئة السن: أقل من عام (سنة) أو أكبر من عام
-  
-  // بيانات صاحب القيد
-  personName: string;            // اسم صاحب القيد رباعي
-  gender: 'male' | 'female';
-  eventDate: string;             // تاريخ الواقعة الفعلي أو التقريبي
-  eventPlace: string;            // محل الواقعة (القرية أو المستشفى)
-  fatherName: string;            // اسم الأب
-  motherName: string;            // اسم الأم
-  
-  // بيانات مقدم الطلب
-  applicantName: string;         // اسم مقدم الطلب
-  applicantRelation: string;     // صفته / صلته بصاحب القيد
-  applicantNationalId: string;   // الرقم القومي لمقدم الطلب
-  applicantPhone: string;        // رقم الهاتف
-  applicantAddress: string;      // عنوان مقدم الطلب
-  
-  // أسباب التأخر في التبليغ
-  delayReason: string;           // سبب التأخر عن الميعاد القانوني
-  
-  // تسجيل الملاحظات (مطلوب صراحة من المستخدم)
-  notes: string;                 // خانة تفصيلية لتسجيل الملاحظات الإدارية والقانونية
-  
-  // متابعة وتتبع الإجراءات (خاصية متابعة حالة الاستمارة)
-  status: LateRegStatus;
-  medicalCommitteeDecision?: string; // قرار اللجنة الطبية
-  medicalCommitteeDecisionDate?: string; // تاريخ قرار اللجنة
-  medicalCommitteeDocNumber?: string; // رقم كتاب الإحالة للجنة
-  civilRegistryDocNumber?: string;   // رقم صادر السجل المدني / كتاب القيد
-  civilRegistrySendDate?: string;    // تاريخ الإرسال للسجل المدني
-  finalRegistrationNumber?: string;  // رقم القيد النهائي المعتمد بسجل ساقط القيد
-  finalCertificateNumber?: string;   // رقم شهادة الميلاد/الوفاة المستخرجة
-  resolvedDate?: string;             // تاريخ إنهاء المعاملة والاعتماد
-  rejectionReason?: string;          // سبب الرفض بالتفصيل
-  rejectionDate?: string;            // تاريخ قرار الرفض
-  trackingHistory?: LateRegTrackingStep[]; // سجل المتابعة والمسار الزمني
-  staffName: string;                 // الموظف المختص
-  createdAt: string;
+  transactionId: string;
+  formNumber: string;         // رقم الاستمارة أو الطلب
+  date: string;               // تاريخ تقديم الطلب
+  personName: string;         // اسم صاحب الواقعة المراد قيدها
+  personNationalId?: string;  // الرقم القومي إن وجد
+  fatherName: string;         // اسم الوالد
+  motherName: string;         // اسم الوالدة
+  eventDate: string;          // تاريخ الواقعة (الميلاد أو الوفاة الفعلي أو التقريبي)
+  eventType: 'ميلاد' | 'وفاة'; // نوع الواقعة
+  gender: 'ذكر' | 'أنثى';     // النوع
+  applicantName: string;      // اسم مقدم الطلب
+  applicantRelation: string;  // صلة القرابة
+  status: 'قيد الفحص' | 'محول للجنة' | 'معتمد ومقيد' | 'مرفوض'; // حالة الطلب
+  staffName: string;          // الموظف المختص (الافتراضي: غير محدد)
+  notes?: string;
+  version: number;
   updatedAt: string;
-
-  // حقول المعاملات والمزامنة التراكمية (Additive Sync Fields)
-  transactionId?: string;           // معرف الحركة العالمي الفريد Global Unique Transaction ID
-  deviceId?: string;                // معرف الجهاز المنفذ للحركة Device ID
-  syncStatus?: 'synced' | 'pending'; // حالة المزامنة
-  syncedAt?: string;                // توقيت الاعتماد المركزي
-  isOfflineCreated?: boolean;       // تم إنشاؤها أوفلاين
-  version?: number;                 // رقم إصدار السجل
+  isDeleted?: boolean;
+  deletedAt?: string;
+  syncStatus?: 'pending' | 'synced' | 'unconfirmed';
 }
 
-export interface OpeningBalanceItem {
-  stockCategory: StockCategory;
-  openingQuantity: number;
-  serialFrom?: string;
-  serialTo?: string;
-  serialRanges?: SerialRange[]; // دعم أكثر من تسلسل ودفاتر متعددة
-  minThreshold?: number;
+export interface OpeningBalanceEntry {
+  category: StockCategory;
+  quantity: number;
+  inventoryDate: string;
+  inventoryKeeper: string;
   notes?: string;
 }
 
-export interface OpeningBalanceRecord {
-  asOfDate: string; // تاريخ الرصيد الافتتاحي (YYYY-MM-DD)
-  minuteNumber: string; // رقم محضر الجرد الافتتاحي
-  inventoryKeeper: string; // كاتب صحة سفلاق / أمين العهدة
-  committeeLeader: string; // رئيس لجنة الجرد / المفتش الصحي
-  committeeMember?: string; // مراقب أول الصحة
-  officeManager?: string; // مدير مكتب الصحة
-  items: Record<StockCategory, OpeningBalanceItem>;
-  notes?: string;
-  createdAt: string;
-  updatedAt: string;
+export interface OfficeSettings {
+  officeName: string;
+  governorate: string;
+  currentEmployee: string;    // اسم الموظف الحالي (افتراضي: غير محدد)
+  healthCardMaleFee: number;  // تسعيرة بطاقة الذكور
+  healthCardFemaleFee: number;// تسعيرة بطاقة الإناث
+  birthCertFee: number;
+  deathCertFee: number;
+}
+
+export interface Tombstone {
+  recordId: string;
+  recordType: 'supply' | 'dispense' | 'late_registration';
+  transactionId: string;
+  deletedAt: string;
+  version: number;
 }
 
 export interface ResetBoundary {
   resetId: string;
-  resetAt: string; // ISO timestamp of reset boundary
+  resetTimestamp: string;
   resetBy: string;
-  resetVersion: number;
-  backupId?: string;
   reason?: string;
 }
 
-export interface SyncTombstone {
-  id?: string;
-  recordId: string;
-  transactionId?: string;
-  operationKey?: string;
-  operationType: 'DELETE_DISPENSE' | 'DELETE_SUPPLY' | 'DELETE_LATE_REG' | string;
-  deletedAt: string;
-  deviceId?: string;
-  deletedBy?: string;
-  reason?: string;
-  itemsRestored?: any;
-  synced?: boolean;
-  details?: any;
-}
-
-export interface AppDatabase {
-  version: number;
-  lastBackupDate: string;
-  stocks: Record<StockCategory, StockItem>;
-  supplyTransactions: SupplyTransaction[];
-  dispenseRecords: DispenseRecord[];
-  lateRegistrations: LateRegistrationRecord[];
-  openingBalances?: OpeningBalanceRecord;
-  resetBoundary?: ResetBoundary;
-  syncTombstones?: SyncTombstone[];
-  integrityIssues?: IntegrityIssue[];
-  officeSettings: {
-    officeName: string;
-    center: string;
-    directorate: string;
-    governorate: string;
-    currentEmployee: string;
-  };
-}
-
-export type SyncStatus = 'synced' | 'syncing' | 'pending' | 'offline' | 'error';
-
-export type SyncOperationType =
-  | 'DISPENSE'
-  | 'SUPPLY'
+export type OperationType =
+  | 'SUPPLY_ADD'
+  | 'SUPPLY_UPDATE'
+  | 'SUPPLY_DELETE'
+  | 'DISPENSE_ADD'
+  | 'DISPENSE_UPDATE'
+  | 'DISPENSE_DELETE'
   | 'LATE_REG_ADD'
   | 'LATE_REG_UPDATE'
-  | 'UPDATE_DISPENSE'
-  | 'DELETE_DISPENSE'
-  | 'UPDATE_SUPPLY'
-  | 'DELETE_SUPPLY'
-  | 'DELETE_LATE_REG';
+  | 'LATE_REG_DELETE'
+  | 'MANUAL_STOCK_ADJUSTMENT'
+  | 'OPENING_BALANCE_SET';
 
-export interface AutoSyncConfig {
-  enabled: boolean;                      // تفعيل التخزين والتحديث التلقائي
-  syncOnReconnect: boolean;              // مزامنة فورية عند عودة الاتصال بالإنترنت
-  periodicSyncMinutes: number;           // دورية التخزين التلقائي بالدقائق عند توفر الإنترنت
-  durableIndexedDB: boolean;             // الاحتفاظ بنسخة احتياطية مشفرة في IndexedDB عالي السعة
-  cloudServerSync: boolean;              // إرسال نسخة احتياطية لخادم المركز السحابي عند الاتصال
-  lastSyncTime: string | null;           // توقيت آخر تخزين ومزامنة ناجحة
-  lastSyncStatus: 'success' | 'failed' | 'pending' | null;
-  lastSyncMessage: string | null;
-  totalRecordsLastSynced: number;
-  deviceId?: string;                     // معرف الجهاز الحالي
-  pendingQueueCount?: number;            // عدد الحركات بانتظار الإرسال
-  lastSyncToken?: string | null;         // توكن آخر مزامنة تدريجية
+export interface SyncTransactionItem {
+  transactionId: string;
+  operationKey: string;       // ${operationType}:${recordId}:${version}
+  recordId: string;
+  operationType: OperationType;
+  version: number;
+  updatedAt: string;
+  deviceId: string;
+  payload: any;
 }
 
-export interface SyncQueueItem {
-  syncId: string;                        // UUID فريد لعنصر الطابور
-  operationKey?: string;                 // مفتاح العملية الفريد للحماية من التكرار (operationType:recordId:syncId)
-  transactionId: string;                 // Global Unique Transaction ID
-  deviceId: string;                      // معرف الجهاز المنفذ للحركة
-  userId: string;                        // الموظف المنفذ
-  operationType: SyncOperationType;
-  tableName: 'dispenseRecords' | 'supplyTransactions' | 'lateRegistrations';
-  recordId: string;                      // معرف السجل المستهدف
-  payload: any;                          // بيانات الحركة كاملة
-  createdAt: string;                     // تاريخ ووقت الإنشاء محلياً
-  status: 'pending' | 'syncing' | 'synced' | 'failed';
-  retryCount: number;                    // عدد محاولات الإرسال
-  lastError?: string;                    // نص آخر خطأ إن وجد
-  syncedAt?: string;                     // توقيت الاعتماد المركزي
-  version?: number;                      // رقم إصدار السجل لترتيب وتحديث العمليات بدقة
-  updatedAt?: string;                    // توقيت آخر تعديل للعملية
-  sequenceNumber?: number;               // الترتيب التسلسلي في الطابور
+export interface AuditLogEntry {
+  id: string;
+  timestamp: string;
+  action: string;
+  category?: StockCategory;
+  details: string;
+  performedBy: string;
+  previousValue?: any;
+  newValue?: any;
+}
+
+export interface DatabaseSchema {
+  version: number;
+  lastUpdated: string;
+  resetBoundary: ResetBoundary;
+  officeSettings: OfficeSettings;
+  stocks: Record<StockCategory, CategoryStock>;
+  supplies: SupplyTransaction[];
+  dispenses: DispenseRecord[];
+  lateRegistrations: LateRegistrationRecord[];
+  openingBalances: Record<StockCategory, OpeningBalanceEntry>;
+  tombstones: Tombstone[];
+  auditLogs: AuditLogEntry[];
 }
 
 export interface IntegrityIssue {
   id: string;
-  type: 'CRITICAL' | 'WARNING' | 'INFO';
-  category: 'NEGATIVE_BALANCE' | 'DUPLICATE_ID' | 'DISCREPANCY' | 'ORPHAN_TOMBSTONE' | 'ONLINE_ONLY' | 'OVERDRAFT_RECORD' | 'CORRUPTED_RECORD';
+  code:
+    | 'STOCK_INTEGRITY_MISMATCH'
+    | 'NEGATIVE_STOCK'
+    | 'DUPLICATE_TRANSACTION'
+    | 'DUPLICATE_RECORD'
+    | 'INVALID_CATEGORY'
+    | 'INVALID_TRANSACTION_TYPE'
+    | 'INVALID_GENDER'
+    | 'ORPHAN_TRANSACTION'
+    | 'STALE_UPDATE'
+    | 'ONLINE_ONLY_TRANSACTION'
+    | 'DEMO_TRANSACTION'
+    | 'RESET_BOUNDARY_VIOLATION'
+    | 'DELETED_TRANSACTION_RETURNING';
+  severity: 'critical' | 'warning' | 'info';
+  category?: StockCategory;
   title: string;
   description: string;
-  recordId?: string;
-  transactionId?: string;
-  stockCategory?: StockCategory;
-  details?: any;
+  details: Record<string, any>;
+  detectedAt: string;
 }
 
-export interface FullIntegrityReport {
+export interface IntegrityReport {
   timestamp: string;
-  isValid: boolean;
-  criticalIssuesCount: number;
-  warningsCount: number;
+  hasErrors: boolean;
+  totalIssues: number;
+  criticalIssues: number;
+  warningIssues: number;
   issues: IntegrityIssue[];
-  stockAudit: Record<StockCategory, {
-    recordedStock: number;
+  categoryAudits: Array<{
+    category: StockCategory;
+    currentStock: number;
     theoreticalStock: number;
     difference: number;
-    openingBalance: number;
-    totalSupplied: number;
-    totalDispensed: number;
-    totalDamaged: number;
     isBalanced: boolean;
+    openingStock: number;
+    totalReceived: number;
+    totalDispensed: number;
+    damagedOrCancelled: number;
   }>;
-  onlineOnlyRecords: Array<{
-    type: 'SUPPLY' | 'DISPENSE' | 'LATE_REG';
-    id: string;
-    transactionId?: string;
-    date: string;
-    details: any;
-  }>;
-  summary: string;
-}
-
-export interface SyncLogEntry {
-  id: string;
-  timestamp: string;
-  trigger: 'reconnect' | 'manual' | 'periodic' | 'change';
-  status: 'success' | 'failed';
-  recordCount: number;
-  details: string;
 }

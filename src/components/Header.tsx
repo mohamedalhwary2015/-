@@ -1,306 +1,194 @@
-import React from 'react';
-import { PWAInstallButton } from './PWAInstallButton';
-import { useOnlineStatus } from '../hooks/useOnlineStatus';
-import { SyncStatus } from '../types';
-import { 
-  Building2, 
-  LayoutDashboard, 
-  PackagePlus, 
-  FileCheck2, 
-  FileQuestion, 
-  FileSpreadsheet, 
-  HardDrive,
-  Wifi, 
-  WifiOff, 
-  Clock,
-  BarChart3,
-  CalendarCheck2,
-  Boxes,
-  Globe2,
-  CloudCheck,
-  CloudOff,
-  RefreshCw,
-  Menu,
-  ChevronLeft,
-  Wrench
-} from 'lucide-react';
-
-export type ActiveTab = 'dashboard' | 'stock' | 'opening_balances' | 'dispense' | 'late_reg' | 'item_reports' | 'monthly_report' | 'reports' | 'backup';
-
-export const TAB_TITLES: Record<ActiveTab, { title: string; subtitle: string; icon: React.ElementType }> = {
-  dashboard: {
-    title: 'لوحة المؤشرات والأرصدة',
-    subtitle: 'نظرة عامة على حركة المخزن وإحصاءات الصرف',
-    icon: LayoutDashboard,
-  },
-  dispense: {
-    title: 'صرف الأرصدة والمستندات',
-    subtitle: 'تسجيل صرف شهادات الميلاد والوفاة والبطاقات الصحية للمواطنين',
-    icon: FileCheck2,
-  },
-  stock: {
-    title: 'تسجيل وتوريد الأرصدة',
-    subtitle: 'إضافة شحنات وأذون إضافة جديدة للأصناف والمستندات',
-    icon: PackagePlus,
-  },
-  opening_balances: {
-    title: 'الأرصدة الافتتاحية للمكتب',
-    subtitle: 'ضبط رصيد أول المدة الدفتري وتحديث السجلات الأساسية',
-    icon: Boxes,
-  },
-  late_reg: {
-    title: 'استمارات ساقط القيد والملاحظات',
-    subtitle: 'إدارة استمارات 23 وساقط القيد والملاحظات الرقابية',
-    icon: FileQuestion,
-  },
-  monthly_report: {
-    title: 'التقرير والبيان الشهري المعتمد',
-    subtitle: 'بيان حركة المخزن الشهري وتوريد الأرصدة والمصروفات',
-    icon: CalendarCheck2,
-  },
-  item_reports: {
-    title: 'تقارير صرف الأصناف بالفترة',
-    subtitle: 'تقرير تفصيلي لحركة الصرف لكل صنف بالتاريخ والأرقام المسلسلة',
-    icon: BarChart3,
-  },
-  reports: {
-    title: 'التقارير المخصصة والإحصائيات',
-    subtitle: 'استخراج شيتات إكسيل وإحصاءات متقدمة لأعمال المكتب',
-    icon: FileSpreadsheet,
-  },
-  backup: {
-    title: 'النسخ الاحتياطي والأمان',
-    subtitle: 'حفظ واسترجاع قاعدة البيانات والتخزين التلقائي عند الاتصال',
-    icon: HardDrive,
-  },
-};
+import React, { useState } from 'react';
+import { RefreshCw, ShieldCheck, Wifi, WifiOff, AlertTriangle, Building2, User } from 'lucide-react';
+import { DatabaseSchema } from '../types';
+import { saveDatabase } from '../storage/db';
 
 interface HeaderProps {
-  activeTab: ActiveTab;
-  setActiveTab: (tab: ActiveTab) => void;
-  totalDispensedToday: number;
-  lowStockCount: number;
-  onOpenGovModal?: () => void;
-  onOpenSyncModal?: () => void;
-  onOpenRepairModal?: () => void;
-  isOnlineProp?: boolean;
-  syncStatus?: SyncStatus;
-  isSyncing?: boolean;
-  pendingQueueCount?: number;
-  onToggleMobileSidebar?: () => void;
+  db: DatabaseSchema;
+  isOnline: boolean;
+  isSyncing: boolean;
+  pendingCount: number;
+  lastSyncTime: string | null;
+  lastError: string | null;
+  onTriggerSync: () => void;
+  onOpenDiagnostics: () => void;
+  integrityIssuesCount: number;
 }
 
 export const Header: React.FC<HeaderProps> = ({
-  activeTab,
-  setActiveTab,
-  totalDispensedToday,
-  lowStockCount,
-  onOpenGovModal,
-  onOpenSyncModal,
-  onOpenRepairModal,
-  isOnlineProp,
-  syncStatus = 'synced',
-  isSyncing = false,
-  pendingQueueCount = 0,
-  onToggleMobileSidebar,
+  db,
+  isOnline,
+  isSyncing,
+  pendingCount,
+  lastSyncTime,
+  lastError,
+  onTriggerSync,
+  onOpenDiagnostics,
+  integrityIssuesCount
 }) => {
-  const detectedOnline = useOnlineStatus();
-  const isOnline = isOnlineProp !== undefined ? isOnlineProp : detectedOnline;
-  const todayDate = new Intl.DateTimeFormat('ar-EG', {
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-  }).format(new Date());
+  const [showEmployeeModal, setShowEmployeeModal] = useState(false);
+  const [employeeInput, setEmployeeInput] = useState(db.officeSettings?.currentEmployee || 'غير محدد');
 
-  const currentTabInfo = TAB_TITLES[activeTab] || TAB_TITLES.dashboard;
-  const CurrentIcon = currentTabInfo.icon;
+  const handleSaveEmployee = () => {
+    const updatedDb = { ...db };
+    if (!updatedDb.officeSettings) {
+      updatedDb.officeSettings = {
+        officeName: 'مكتب صحة سفلاق - إدارة ساقلتة الصحية',
+        governorate: 'محافظة سوهاج',
+        currentEmployee: 'غير محدد',
+        healthCardMaleFee: 50,
+        healthCardFemaleFee: 50,
+        birthCertFee: 0,
+        deathCertFee: 0
+      };
+    }
+    updatedDb.officeSettings.currentEmployee = employeeInput.trim() || 'غير محدد';
+    saveDatabase(updatedDb);
+    setShowEmployeeModal(false);
+  };
 
   return (
-    <header className="no-print bg-white border-b border-slate-200 shadow-xs sticky top-0 z-30">
-      {/* Top Bar: Official Hierarchy & Status */}
-      <div className="bg-emerald-900 text-white px-3 md:px-6 py-1.5 text-xs">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2 font-medium text-[11px] md:text-xs">
-            <span className="font-bold">جمهورية مصر العربية</span>
-            <span className="opacity-60">|</span>
-            <span>وزارة الصحة والسكان</span>
-            <span className="opacity-60 hidden sm:inline">|</span>
-            <span className="hidden sm:inline">مديرية الشؤون الصحية بسوهاج</span>
-            <span className="opacity-60 hidden md:inline">|</span>
-            <span className="hidden md:inline">الإدارة الصحية بساقلتة</span>
-          </div>
-
-          <div className="flex items-center gap-3 text-[11px]">
-            <div className="flex items-center gap-1.5 opacity-90 hidden sm:flex">
-              <Clock className="w-3.5 h-3.5" />
-              <span>{todayDate}</span>
+    <header className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-xs" id="app-header">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="flex items-center justify-between h-16">
+          {/* Right side: Office Identity */}
+          <div className="flex items-center space-x-3 space-x-reverse">
+            <div className="w-10 h-10 rounded-xl bg-teal-600 flex items-center justify-center text-white shadow-xs">
+              <Building2 className="w-5 h-5" />
             </div>
-
-            {/* Live Online & Auto-Sync Header Quick Pill */}
-            {onOpenSyncModal ? (
-              <button
-                onClick={onOpenSyncModal}
-                className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold cursor-pointer transition shadow-xs ${
-                  isSyncing
-                    ? 'bg-blue-600 text-white animate-pulse'
-                    : !isOnline
-                    ? 'bg-amber-600 text-white'
-                    : pendingQueueCount > 0
-                    ? 'bg-amber-500 text-slate-950 font-black'
-                    : 'bg-emerald-800 text-emerald-200 hover:bg-emerald-700'
-                }`}
-                title="انقر لفتح مركز التحديث والمزامنة وإدارة الطابور"
-              >
-                {isSyncing ? (
-                  <RefreshCw className="w-3 h-3 animate-spin" />
-                ) : !isOnline ? (
-                  <WifiOff className="w-3 h-3" />
-                ) : (
-                  <Wifi className="w-3 h-3 text-emerald-400" />
-                )}
-                <span>
-                  {isSyncing
-                    ? 'مزامنة جارية...'
-                    : !isOnline
-                    ? `أوفلاين (محلي${pendingQueueCount > 0 ? ` • ${pendingQueueCount} معلق` : ''})`
-                    : pendingQueueCount > 0
-                    ? `أونلاين (معلق: ${pendingQueueCount})`
-                    : 'أونلاين (متزامن)'}
-                </span>
-              </button>
-            ) : (
-              <div className="flex items-center gap-1.5">
-                {isOnline ? (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-800 text-emerald-200 text-[11px]">
-                    <Wifi className="w-3 h-3 text-emerald-400" />
-                    <span>أونلاين</span>
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-600 text-white text-[11px] font-bold">
-                    <WifiOff className="w-3 h-3 animate-pulse" />
-                    <span>أوفلاين (حفظ محلي آمن)</span>
-                  </span>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Main ERP TopBar: Breadcrumbs & Quick Action Bar */}
-      <div className="px-3 md:px-6 py-2.5 flex items-center justify-between gap-3">
-        {/* Right side in RTL: Hamburger Menu (mobile) & Current Active Screen Title */}
-        <div className="flex items-center gap-3">
-          {onToggleMobileSidebar && (
-            <button
-              onClick={onToggleMobileSidebar}
-              className="md:hidden p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer transition border border-slate-200"
-              aria-label="فتح القائمة الرئيسية"
-              title="فتح قائمة المهام والأرصدة"
-            >
-              <Menu className="w-5 h-5" />
-            </button>
-          )}
-
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 md:w-10 md:h-10 rounded-xl bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center justify-center shrink-0 shadow-2xs">
-              <CurrentIcon className="w-5 h-5 md:w-5.5 md:h-5.5 text-emerald-700" />
-            </div>
-
             <div>
-              {/* ERP Breadcrumb */}
-              <div className="flex items-center gap-1.5 text-[11px] text-slate-500 font-medium">
-                <span className="hover:text-emerald-700 cursor-pointer" onClick={() => setActiveTab('dashboard')}>
-                  مكتب صحة سفلاق
+              <div className="flex items-center gap-2">
+                <h1 className="text-base sm:text-lg font-bold text-slate-900 leading-tight">
+                  {db.officeSettings?.officeName || 'مكتب صحة سفلاق - إدارة ساقلتة الصحية'}
+                </h1>
+                <span className="text-xs bg-teal-50 text-teal-700 px-2 py-0.5 rounded-md font-medium border border-teal-200">
+                  {db.officeSettings?.governorate || 'محافظة سوهاج'}
                 </span>
-                <ChevronLeft className="w-3 h-3 text-slate-400" />
-                <span className="text-emerald-700 font-bold">نظام ERP</span>
               </div>
-
-              {/* Active Tab Name */}
-              <h1 className="text-base md:text-lg font-black text-slate-900 tracking-tight leading-tight">
-                {currentTabInfo.title}
-              </h1>
+              <p className="text-xs text-slate-500 hidden sm:block">
+                المنظومة الرقمية المعتمدة لتسجيل الأرصدة والمستندات وساقط القيد
+              </p>
             </div>
           </div>
-        </div>
 
-        {/* Left side in RTL: Quick Action Buttons */}
-        <div className="flex items-center gap-2">
-          {/* Quick Auto-Sync Center Button */}
-          {onOpenSyncModal && (
+          {/* Left side: System Controls, Sync & Employee */}
+          <div className="flex items-center space-x-2 sm:space-x-3 space-x-reverse">
+            {/* Integrity status button */}
             <button
-              id="header-open-sync-modal-btn"
-              onClick={onOpenSyncModal}
-              className={`hidden sm:inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-black shadow-2xs transition active:scale-95 cursor-pointer border ${
-                isSyncing
-                  ? 'bg-blue-50 border-blue-300 text-blue-800'
-                  : !isOnline
-                  ? 'bg-amber-50 border-amber-300 text-amber-900 hover:bg-amber-100'
-                  : 'bg-emerald-50 border-emerald-300 text-emerald-900 hover:bg-emerald-100'
+              id="btn-integrity-check"
+              onClick={onOpenDiagnostics}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors border ${
+                integrityIssuesCount > 0
+                  ? 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
+                  : 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
               }`}
-              title="مركز التحديث والتخزين التلقائي عند الاتصال بالإنترنت"
+              title="فحص نزاهة وتدقيق الأرصدة"
             >
-              {isSyncing ? (
-                <RefreshCw className="w-3.5 h-3.5 text-blue-600 animate-spin" />
-              ) : !isOnline ? (
-                <CloudOff className="w-3.5 h-3.5 text-amber-600" />
+              {integrityIssuesCount > 0 ? (
+                <>
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600" />
+                  <span>تنبيهات الأرصدة ({integrityIssuesCount})</span>
+                </>
               ) : (
-                <CloudCheck className="w-3.5 h-3.5 text-emerald-600" />
+                <>
+                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                  <span>الأرصدة سليمة</span>
+                </>
               )}
-              <span>
-                {isSyncing
-                  ? 'مزامنة جارية...'
-                  : !isOnline
-                  ? 'أوفلاين'
-                  : 'تخزين تلقائي نشط'}
+            </button>
+
+            {/* Current Employee Button (No hardcoded name - Rule 23) */}
+            <button
+              id="btn-current-employee"
+              onClick={() => setShowEmployeeModal(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-100 text-slate-700 hover:bg-slate-200 border border-slate-200"
+              title="تحديد الموظف المختص الحالي"
+            >
+              <User className="w-3.5 h-3.5 text-slate-500" />
+              <span className="max-w-[100px] truncate">
+                {db.officeSettings?.currentEmployee || 'غير محدد'}
               </span>
             </button>
-          )}
 
-          {/* Production Data Repair Button (Offline ↔ Online) */}
-          {onOpenRepairModal && (
-            <button
-              id="header-open-repair-modal-btn"
-              onClick={onOpenRepairModal}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black shadow-2xs transition active:scale-95 cursor-pointer border bg-amber-50 hover:bg-amber-100 border-amber-300 text-amber-900"
-              title="مركز استعادة وتصحيح بيانات الإنتاج ومطابقة نسخة Offline"
-            >
-              <Wrench className="w-3.5 h-3.5 text-amber-700" />
-              <span className="hidden lg:inline">تصحيح الإنتاج (Offline)</span>
-            </button>
-          )}
+            {/* Sync & Online Status */}
+            <div className="flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-lg p-1">
+              <span
+                className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded-md ${
+                  isOnline
+                    ? 'bg-emerald-100/70 text-emerald-700'
+                    : 'bg-rose-100/70 text-rose-700'
+                }`}
+              >
+                {isOnline ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}
+                <span className="hidden md:inline">{isOnline ? 'متصل' : 'أوفلاين'}</span>
+              </span>
 
-          {/* Mechanization System Direct Button */}
-          {onOpenGovModal && (
-            <button
-              id="header-open-gov-modal-btn"
-              onClick={onOpenGovModal}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-700 hover:bg-blue-800 text-white text-xs font-black shadow-2xs transition active:scale-95 cursor-pointer border border-blue-600"
-              title="الانتقال السريع لمنظومة الميكنة الرسمية (10.1.80.50) وتجهيز شيتات المطابقة"
-            >
-              <Globe2 className="w-3.5 h-3.5 text-blue-200" />
-              <span className="hidden md:inline">منظومة الميكنة (10.1.80.50)</span>
-              <span className="md:hidden">10.1.80.50</span>
-            </button>
-          )}
-
-          {/* Low Stock Warning Badge */}
-          {lowStockCount > 0 && (
-            <button
-              onClick={() => setActiveTab('stock')}
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-amber-50 text-amber-800 border border-amber-300 text-xs font-bold hover:bg-amber-100 transition cursor-pointer shadow-2xs"
-              title="توجد أصناف وصلت لحد إعادة الطلب، انقر للعرض والتوريد"
-            >
-              <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping" />
-              <span>{lowStockCount} منخفض</span>
-            </button>
-          )}
-
-          <PWAInstallButton />
+              <button
+                id="btn-trigger-sync"
+                onClick={onTriggerSync}
+                disabled={isSyncing}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
+                  isSyncing
+                    ? 'bg-teal-50 text-teal-700 cursor-not-allowed'
+                    : pendingCount > 0
+                    ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+                    : 'bg-white text-slate-700 hover:bg-slate-100 border border-slate-200'
+                }`}
+                title={lastError ? `آخر خطأ: ${lastError}` : 'مزامنة المعاملات المعلقة'}
+              >
+                <RefreshCw className={`w-3 h-3 ${isSyncing ? 'animate-spin text-teal-600' : ''}`} />
+                <span>
+                  {isSyncing
+                    ? 'جارٍ المزامنة...'
+                    : pendingCount > 0
+                    ? `معلق (${pendingCount})`
+                    : 'مزامنة'}
+                </span>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
+
+      {/* Employee Modal */}
+      {showEmployeeModal && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-xl border border-slate-200">
+            <h3 className="text-lg font-bold text-slate-900 mb-2">الموظف المختص الحالي</h3>
+            <p className="text-xs text-slate-500 mb-4">
+              سيتم تسجيل هذا الاسم في سجلات التوريد والصرف وساقط القيد خلال فترة نوبتك.
+            </p>
+            <div className="mb-4">
+              <label className="block text-xs font-semibold text-slate-700 mb-1">اسم الموظف / كاتب الصحة</label>
+              <input
+                type="text"
+                id="input-employee-name"
+                value={employeeInput}
+                onChange={(e) => setEmployeeInput(e.target.value)}
+                placeholder="مثال: محمد السيد، أو غير محدد"
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-hidden focus:ring-2 focus:ring-teal-500"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowEmployeeModal(false)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
+              >
+                إلغاء
+              </button>
+              <button
+                type="button"
+                id="btn-save-employee"
+                onClick={handleSaveEmployee}
+                className="px-4 py-2 text-xs font-semibold text-white bg-teal-600 hover:bg-teal-700 rounded-lg shadow-xs"
+              >
+                حفظ الموظف
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </header>
   );
 };

@@ -1,446 +1,325 @@
 /**
- * Central Stock Calculation & Integrity Audit Service
- * مصدر الحقيقة المركزي الوحيد لحساب الأرصدة والتدقيق الجردي وفحص النزاهة
+ * مكتب صحة سفلاق - منظومة تسجيل الأرصدة وساقط القيد
+ * Stock Verification & Theoretical Audit Engine
  * 
- * القواعد الصارمة:
- * 1. لا يتم فرض أو تغيير الأرصدة الحالية تلقائياً بدون موافقة إدارية صريحة.
- * 2. ممنوع إخفاء أخطاء الرصيد باستخدام Math.max(0, ...).
- * 3. منع الصرف إذا كان الرصيد غير كافٍ.
- * 4. رصد الحركات الموجودة أونلاين فقط دون دمجها أعمى.
+ * STRICT MANDATE:
+ * Theoretical stock is computed for AUDITING and VERIFICATION only.
+ * Functions here MUST NEVER automatically mutate or overwrite `currentStock`!
  */
 
 import {
-  AppDatabase,
+  DatabaseSchema,
   StockCategory,
-  StockItem,
-  FullIntegrityReport,
-  IntegrityIssue,
-  SyncTombstone,
+  STOCK_CATEGORIES,
+  CATEGORY_LABELS,
+  IntegrityReport,
+  IntegrityIssue
 } from '../types';
 
-export interface StockCalculationResult {
+export interface CategoryAuditResult {
   category: StockCategory;
-  openingBalance: number;
-  totalSupplied: number;
+  categoryLabel: string;
+  currentStock: number;       // الرصيد الفعلي المحمي تشغيلياً
+  theoreticalStock: number;   // الرصيد النظري المحسوب من الحركات
+  difference: number;         // الفارق (currentStock - theoreticalStock)
+  isBalanced: boolean;        // هل الحساب النظري متطابق مع الرصيد الفعلي
+  openingStock: number;
+  totalReceived: number;
   totalDispensed: number;
-  totalDamaged: number;
-  theoreticalStock: number;
-  recordedStock: number;
-  difference: number;
-  isBalanced: boolean;
-}
-
-export interface RecalculateAllStocksResult {
-  theoreticalStocks: Record<StockCategory, StockItem>;
-  currentStocks: Record<StockCategory, StockItem>;
-  discrepancies: StockCalculationResult[];
-  hasDiscrepancies: boolean;
-  applied: boolean;
+  damagedOrCancelled: number;
 }
 
 /**
- * حساب الرصيد النظري الدقيق لصنف معين بناءً على الحركات
+ * Calculates theoretical numbers from transactions without touching currentStock
  */
-export function calculateStockForCategory(
-  category: StockCategory,
-  db: AppDatabase
-): StockCalculationResult {
-  const stockItem = db.stocks?.[category] || {
-    id: category,
-    name: category,
-    category: 'birth',
+export function calculateTheoreticalStockForCategory(
+  db: DatabaseSchema,
+  category: StockCategory
+): CategoryAuditResult {
+  const stock = db.stocks[category] || {
+    category,
     currentStock: 0,
+    openingStock: 0,
     totalReceived: 0,
     totalDispensed: 0,
     damagedOrCancelled: 0,
-    minThreshold: 10,
-    unit: 'وحدة',
-    lastUpdated: new Date().toISOString(),
+    theoreticalStock: 0,
+    lastUpdated: new Date().toISOString()
   };
 
-  // 1. الرصيد الافتتاحي المعتمد
-  const openingItem = db.openingBalances?.items?.[category];
-  const openingBalance = openingItem?.openingQuantity ?? 0;
+  const openingStock = Number(stock.openingStock) || 0;
 
-  // استبعاد الحركات المحذوفة (Tombstones)
-  const tombstonedIds = new Set(
-    (db.syncTombstones || []).map((t) => t.recordId)
-  );
-
-  // 2. مجموع التوريدات الفعلية غير المحذوفة
-  const totalSupplied = (db.supplyTransactions || [])
-    .filter((s) => s.stockCategory === category && !tombstonedIds.has(s.id))
+  // 1. Sum verified active supplies
+  const totalReceived = (db.supplies || [])
+    .filter(s => !s.isDeleted && s.category === category)
     .reduce((sum, s) => sum + (Number(s.quantity) || 0), 0);
 
-  // 3. مجموع المنصرف الفعلي غير المحذوف
-  let totalDispensed = 0;
-  (db.dispenseRecords || [])
-    .filter((d) => !tombstonedIds.has(d.id))
-    .forEach((d) => {
-      (d.itemsDeducted || []).forEach((item) => {
-        if (item.stockCategory === category) {
-          totalDispensed += Number(item.quantity) || 0;
-        }
-      });
-    });
+  // 2. Sum verified active dispenses
+  const totalDispensed = (db.dispenses || [])
+    .filter(d => !d.isDeleted && d.category === category)
+    .reduce((sum, d) => sum + (Number(d.quantity) || 0), 0);
 
-  // 4. التالف والمعتمد
-  const totalDamaged = Number(stockItem.damagedOrCancelled) || 0;
+  const damagedOrCancelled = Number(stock.damagedOrCancelled) || 0;
 
-  // المعادلة المركزية: الرصيد = الافتتاحي + التوريد - الصرف - التالف
-  // إذا لم يكن هناك محضر رصيد افتتاحي مسجل (openingBalance = 0)،
-  // وكانت التوريدات مسجلة، فإن الرصيد النظري = التوريدات - الصرف - التالف
-  const theoreticalStock = openingBalance + totalSupplied - totalDispensed - totalDamaged;
-  const recordedStock = Number(stockItem.currentStock) || 0;
-  const difference = recordedStock - theoreticalStock;
+  // Theoretical mathematical stock
+  const theoreticalStock = openingStock + totalReceived - totalDispensed - damagedOrCancelled;
+  const currentStock = Number(stock.currentStock) || 0;
+  const difference = currentStock - theoreticalStock;
 
   return {
     category,
-    openingBalance,
-    totalSupplied,
-    totalDispensed,
-    totalDamaged,
+    categoryLabel: CATEGORY_LABELS[category],
+    currentStock,
     theoreticalStock,
-    recordedStock,
     difference,
     isBalanced: difference === 0,
+    openingStock,
+    totalReceived,
+    totalDispensed,
+    damagedOrCancelled
   };
 }
 
 /**
- * دالة مركزية لحساب أرصدة جميع الأصناف وتحديد الفروقات الجردية
- * الافتراضي: معاينة فقط وعدم تعديل قاعدة البيانات الحالية
+ * Audits all stocks theoretically.
+ * NEVER mutates `currentStock`!
  */
-export function recalculateAllStocks(
-  db: AppDatabase,
-  options?: { applyChanges?: boolean }
-): RecalculateAllStocksResult {
-  const currentStocks = { ...(db.stocks || {}) } as Record<StockCategory, StockItem>;
-  const theoreticalStocks = {} as Record<StockCategory, StockItem>;
-  const discrepancies: StockCalculationResult[] = [];
+export function recalculateAllStocks(db: DatabaseSchema): {
+  audits: Record<StockCategory, CategoryAuditResult>;
+  allBalanced: boolean;
+  totalDifference: number;
+} {
+  const audits: Record<StockCategory, CategoryAuditResult> = {} as any;
+  let allBalanced = true;
+  let totalDifference = 0;
 
-  const categories = Object.keys(currentStocks) as StockCategory[];
-
-  categories.forEach((cat) => {
-    const calc = calculateStockForCategory(cat, db);
-    const existing = currentStocks[cat];
-
-    theoreticalStocks[cat] = {
-      ...existing,
-      currentStock: calc.theoreticalStock,
-      totalReceived: calc.totalSupplied + calc.openingBalance,
-      totalDispensed: calc.totalDispensed,
-      damagedOrCancelled: calc.totalDamaged,
-      lastUpdated: new Date().toISOString(),
-    };
-
-    if (!calc.isBalanced) {
-      discrepancies.push(calc);
+  for (const cat of STOCK_CATEGORIES) {
+    const audit = calculateTheoreticalStockForCategory(db, cat);
+    audits[cat] = audit;
+    if (!audit.isBalanced) {
+      allBalanced = false;
+      totalDifference += Math.abs(audit.difference);
     }
-  });
-
-  const hasDiscrepancies = discrepancies.length > 0;
-  const shouldApply = options?.applyChanges === true;
-
-  if (shouldApply) {
-    db.stocks = theoreticalStocks;
   }
 
   return {
-    theoreticalStocks,
-    currentStocks,
-    discrepancies,
-    hasDiscrepancies,
-    applied: shouldApply,
+    audits,
+    allBalanced,
+    totalDifference
   };
 }
 
 /**
- * التحقق الصارم من كفاية الرصيد قبل الصرف (Atomic Check)
- * تمنع الصرف إذا تجاوز الرصيد المتاح وتمنع Math.max لإخفاء الخطأ
+ * Validates stock availability prior to dispensing
  */
 export function validateDispenseAvailability(
-  stocks: Record<StockCategory, StockItem>,
-  itemsToDeduct: Array<{ stockCategory: StockCategory; quantity: number }>
-): {
-  isValid: boolean;
-  insufficientCategory?: StockCategory;
-  available?: number;
-  requested?: number;
-  errorMessage?: string;
-} {
-  for (const item of itemsToDeduct) {
-    const stock = stocks[item.stockCategory];
-    const available = stock ? Number(stock.currentStock) || 0 : 0;
-    const requested = Number(item.quantity) || 0;
+  db: DatabaseSchema,
+  category: StockCategory,
+  requestedQuantity: number = 1
+): { available: boolean; currentStock: number; message?: string } {
+  const stock = db.stocks[category];
+  const currentStock = stock ? stock.currentStock : 0;
 
-    if (requested <= 0) {
-      return {
-        isValid: false,
-        insufficientCategory: item.stockCategory,
-        available,
-        requested,
-        errorMessage: `كمية الصرف غير صالحة للصنف (${stock?.name || item.stockCategory})`,
-      };
-    }
-
-    if (requested > available) {
-      return {
-        isValid: false,
-        insufficientCategory: item.stockCategory,
-        available,
-        requested,
-        errorMessage: `الرصيد غير كافٍ للصنف (${stock?.name || item.stockCategory}): الرصيد المتاح ${available}، والمطلوب صرفه ${requested}`,
-      };
-    }
+  if (currentStock < requestedQuantity) {
+    return {
+      available: false,
+      currentStock,
+      message: `الرصيد الفعلي الحالي (${currentStock}) غير كافٍ لصرف الكمية المطلوبة (${requestedQuantity}) من ${CATEGORY_LABELS[category]}`
+    };
   }
 
-  return { isValid: true };
+  return {
+    available: true,
+    currentStock
+  };
 }
 
 /**
- * منظومة الفحص والتدقيق الشامل لنزاهة البيانات (runFullIntegrityCheck)
- * فحص كامل لـ 18 محوراً دون تعديل أي بيان
+ * Full Integrity Audit of entire database (Rule 31)
+ * Detects discrepancies, duplicates, boundary violations, demo records, tombstones
+ * STRICT: Detects first, does NOT automatically mutate currentStock!
  */
-export function runFullIntegrityCheck(
-  db: AppDatabase,
-  onlineDb?: AppDatabase | null
-): FullIntegrityReport {
+export function runFullIntegrityCheck(db: DatabaseSchema): IntegrityReport {
   const issues: IntegrityIssue[] = [];
   const now = new Date().toISOString();
 
-  const stocks = db.stocks || ({} as Record<StockCategory, StockItem>);
-  const tombstones = db.syncTombstones || [];
-  const tombstonedRecordIds = new Set(tombstones.map((t) => t.recordId));
-
-  // 1. فحص الأرصدة السالبة (Negative Balance Check)
-  for (const [catKey, item] of Object.entries(stocks)) {
-    const current = Number(item.currentStock);
-    if (isNaN(current) || current < 0) {
-      const loggedList = (db.integrityIssues || []).filter(
-        (i) => i.stockCategory === catKey && i.category === 'NEGATIVE_BALANCE'
-      );
-      const latestLogged = loggedList[loggedList.length - 1];
-
+  // 1. Check theoretical vs operational balance
+  const audits = recalculateAllStocks(db);
+  for (const cat of STOCK_CATEGORIES) {
+    const audit = audits.audits[cat];
+    if (!audit.isBalanced) {
       issues.push({
-        id: `neg-stock-${catKey}-${Date.now()}`,
-        type: 'CRITICAL',
-        category: 'NEGATIVE_BALANCE',
-        title: `عجز حقيقي ورصيد سالب في صنف: ${item.name || catKey}`,
-        description: `الرصيد الحالي المسجل للصنف هو (${current}) وهو أقل من الصفر، مما يشير إلى عجز حقيقي وصرف يفوق الرصيد المتاح.${latestLogged ? ` تفاصيل الحركة المسببة: ${latestLogged.transactionId || latestLogged.recordId || ''}` : ''}`,
-        stockCategory: catKey as StockCategory,
-        recordId: latestLogged?.recordId,
-        transactionId: latestLogged?.transactionId,
+        id: `mismatch-${cat}`,
+        code: 'STOCK_INTEGRITY_MISMATCH',
+        severity: 'warning',
+        category: cat,
+        title: `عدم تطابق في رصيد ${audit.categoryLabel}`,
+        description: `الرصيد الفعلي المحمي هو (${audit.currentStock}) بينما الحساب النظري من الحركات هو (${audit.theoreticalStock}) بفارق (${audit.difference > 0 ? `+${audit.difference}` : audit.difference}). تم الإبقاء على الرصيد الفعلي كما هو بدون تعديل تلقائي.`,
         details: {
-          currentStock: current,
-          affectedCategory: catKey,
-          causingTransactionId: latestLogged?.transactionId,
-          causingRecordId: latestLogged?.recordId,
-          ...(latestLogged?.details || {}),
+          currentStock: audit.currentStock,
+          theoreticalStock: audit.theoreticalStock,
+          difference: audit.difference,
+          openingStock: audit.openingStock,
+          totalReceived: audit.totalReceived,
+          totalDispensed: audit.totalDispensed,
+          damagedOrCancelled: audit.damagedOrCancelled
         },
+        detectedAt: now
       });
     }
-  }
 
-  // دمج أي مشكلات نزاهة مسجلة مسبقاً في قاعدة البيانات لم تكن مشمولة
-  if (Array.isArray(db.integrityIssues)) {
-    for (const loggedIssue of db.integrityIssues) {
-      if (!issues.some((iss) => iss.id === loggedIssue.id || (iss.stockCategory === loggedIssue.stockCategory && iss.category === loggedIssue.category))) {
-        issues.push(loggedIssue);
-      }
-    }
-  }
-
-  // 2. فحص تكرار المعرفات في حركات الصرف (Duplicate Dispense IDs)
-  const dispenseIds = new Set<string>();
-  const dispenseTxIds = new Set<string>();
-  (db.dispenseRecords || []).forEach((d) => {
-    if (dispenseIds.has(d.id)) {
+    if (audit.currentStock < 0) {
       issues.push({
-        id: `dup-disp-id-${d.id}`,
-        type: 'CRITICAL',
-        category: 'DUPLICATE_ID',
-        title: `تكرار في معرف حركة صرف (Dispense ID Duplicate)`,
-        description: `المعرف (${d.id}) مكرر في أكثر من حركة صرف.`,
-        recordId: d.id,
+        id: `negative-${cat}`,
+        code: 'NEGATIVE_STOCK',
+        severity: 'critical',
+        category: cat,
+        title: `رصيد سالب في صنف ${audit.categoryLabel}`,
+        description: `الرصيد الفعلي الحالي أقل من الصفر (${audit.currentStock})، يتطلب تسوية أو مراجعة عهدة الخزينة.`,
+        details: { currentStock: audit.currentStock },
+        detectedAt: now
       });
-    } else {
-      dispenseIds.add(d.id);
     }
+  }
 
-    if (d.transactionId) {
-      if (dispenseTxIds.has(d.transactionId)) {
+  // 2. Detect duplicate transactionIds
+  const seenTxIds = new Map<string, string>();
+  for (const sup of db.supplies || []) {
+    if (sup.transactionId) {
+      if (seenTxIds.has(sup.transactionId)) {
         issues.push({
-          id: `dup-disp-tx-${d.transactionId}`,
-          type: 'WARNING',
-          category: 'DUPLICATE_ID',
-          title: `تكرار معرف المعاملة (transactionId) في الصرف`,
-          description: `المعاملة (${d.transactionId}) مكررة في أكثر من سجل صرف.`,
-          transactionId: d.transactionId,
+          id: `dup-tx-${sup.id}`,
+          code: 'DUPLICATE_TRANSACTION',
+          severity: 'critical',
+          category: sup.category,
+          title: `تكرار في معرف العملية (Transaction ID)`,
+          description: `معرف العملية ${sup.transactionId} مكرر في التوريدات.`,
+          details: { recordId: sup.id, transactionId: sup.transactionId },
+          detectedAt: now
         });
       } else {
-        dispenseTxIds.add(d.transactionId);
+        seenTxIds.set(sup.transactionId, sup.id);
       }
     }
-  });
-
-  // 3. فحص تكرار المعرفات في التوريدات (Duplicate Supply IDs)
-  const supplyIds = new Set<string>();
-  (db.supplyTransactions || []).forEach((s) => {
-    if (supplyIds.has(s.id)) {
-      issues.push({
-        id: `dup-sup-id-${s.id}`,
-        type: 'CRITICAL',
-        category: 'DUPLICATE_ID',
-        title: `تكرار في معرف حركة توريد (Supply ID Duplicate)`,
-        description: `المعرف (${s.id}) مكرر في أكثر من حركة توريد.`,
-        recordId: s.id,
-      });
-    } else {
-      supplyIds.add(s.id);
-    }
-  });
-
-  // 4. فحص السجلات المحذوفة التي عادت (Tombstone Violations)
-  (db.dispenseRecords || []).forEach((d) => {
-    if (tombstonedRecordIds.has(d.id)) {
-      issues.push({
-        id: `tombstone-revived-disp-${d.id}`,
-        type: 'CRITICAL',
-        category: 'ORPHAN_TOMBSTONE',
-        title: `سجل صرف محذوف ما زال موجوداً في السجلات النشطة`,
-        description: `السجل (${d.id}) مسجل كحركة محذوفة في Tombstones ولكنها ما زالت مدرجة كحركة نشطة.`,
-        recordId: d.id,
-      });
-    }
-  });
-
-  (db.supplyTransactions || []).forEach((s) => {
-    if (tombstonedRecordIds.has(s.id)) {
-      issues.push({
-        id: `tombstone-revived-sup-${s.id}`,
-        type: 'CRITICAL',
-        category: 'ORPHAN_TOMBSTONE',
-        title: `سجل توريد محذوف ما زال موجوداً في السجلات النشطة`,
-        description: `التوريد (${s.id}) مسجل كحركة محذوفة في Tombstones ولكنه ما زال مدرجاً.`,
-        recordId: s.id,
-      });
-    }
-  });
-
-  (db.lateRegistrations || []).forEach((l) => {
-    if (tombstonedRecordIds.has(l.id)) {
-      issues.push({
-        id: `tombstone-revived-late-${l.id}`,
-        type: 'CRITICAL',
-        category: 'ORPHAN_TOMBSTONE',
-        title: `استمارة ساقط قيد محذوفة ما زالت موجودة في السجلات النشطة`,
-        description: `الاستمارة (${l.id}) مسجلة كحركة محذوفة في Tombstones ولكنها ما زالت مدرجة.`,
-        recordId: l.id,
-      });
-    }
-  });
-
-  // 5. فحص التدقيق الجردي للأرصدة (Stock Calculation & Discrepancies)
-  const stockAudit = {} as FullIntegrityReport['stockAudit'];
-  const categories = Object.keys(stocks) as StockCategory[];
-
-  categories.forEach((cat) => {
-    const calc = calculateStockForCategory(cat, db);
-    stockAudit[cat] = {
-      recordedStock: calc.recordedStock,
-      theoreticalStock: calc.theoreticalStock,
-      difference: calc.difference,
-      openingBalance: calc.openingBalance,
-      totalSupplied: calc.totalSupplied,
-      totalDispensed: calc.totalDispensed,
-      totalDamaged: calc.totalDamaged,
-      isBalanced: calc.isBalanced,
-    };
-
-    if (!calc.isBalanced) {
-      issues.push({
-        id: `discrepancy-${cat}`,
-        type: 'WARNING',
-        category: 'DISCREPANCY',
-        title: `فرق جردي في صنف: ${stocks[cat]?.name || cat}`,
-        description: `الرصيد الحالي (${calc.recordedStock}) لا يطابق الرصيد المحسوب من واقع الدفاتر (${calc.theoreticalStock})، بفارق (${calc.difference}).`,
-        stockCategory: cat,
-        details: calc,
-      });
-    }
-  });
-
-  // 6. فحص الحركات الموجودة Online فقط (دون دمجها أعمى)
-  const onlineOnlyRecords: FullIntegrityReport['onlineOnlyRecords'] = [];
-  if (onlineDb) {
-    const localDispenseIds = new Set((db.dispenseRecords || []).map((d) => d.id));
-    const localSupplyIds = new Set((db.supplyTransactions || []).map((s) => s.id));
-    const localLateIds = new Set((db.lateRegistrations || []).map((l) => l.id));
-
-    (onlineDb.supplyTransactions || []).forEach((os) => {
-      if (!localSupplyIds.has(os.id) && !tombstonedRecordIds.has(os.id)) {
-        onlineOnlyRecords.push({
-          type: 'SUPPLY',
-          id: os.id,
-          transactionId: os.transactionId,
-          date: os.date,
-          details: os,
-        });
-        issues.push({
-          id: `online-only-sup-${os.id}`,
-          type: 'INFO',
-          category: 'ONLINE_ONLY',
-          title: `حركة توريد موجودة على الخادم السحابي فقط`,
-          description: `التوريد (${os.id} - ${os.stockCategory} - كمية: ${os.quantity}) موجود سحابياً وغير مسجل محلياً.`,
-          recordId: os.id,
-          transactionId: os.transactionId,
-          details: os,
-        });
-      }
-    });
-
-    (onlineDb.dispenseRecords || []).forEach((od) => {
-      if (!localDispenseIds.has(od.id) && !tombstonedRecordIds.has(od.id)) {
-        onlineOnlyRecords.push({
-          type: 'DISPENSE',
-          id: od.id,
-          transactionId: od.transactionId,
-          date: od.date,
-          details: od,
-        });
-        issues.push({
-          id: `online-only-disp-${od.id}`,
-          type: 'INFO',
-          category: 'ONLINE_ONLY',
-          title: `حركة صرف موجودة على الخادم السحابي فقط`,
-          description: `حركة الصرف (${od.id} - ${od.beneficiaryName}) موجودة سحابياً وغير مسجلة محلياً.`,
-          recordId: od.id,
-          transactionId: od.transactionId,
-          details: od,
-        });
-      }
-    });
   }
 
-  const criticalCount = issues.filter((i) => i.type === 'CRITICAL').length;
-  const warningCount = issues.filter((i) => i.type === 'WARNING').length;
-
-  let summary = 'تقرير فحص النزاهة الشامل: ';
-  if (criticalCount === 0 && warningCount === 0) {
-    summary += 'جميع الأرصدة والحركات سليمة تماماً ومطابقة لدفاتر العهدة.';
-  } else {
-    summary += `تم رصد (${criticalCount}) أخطاء حرجة و(${warningCount}) تنبيهات وفروقات دفترية تحتاج مراجعة إدارية.`;
+  for (const dsp of db.dispenses || []) {
+    if (dsp.transactionId) {
+      if (seenTxIds.has(dsp.transactionId)) {
+        issues.push({
+          id: `dup-tx-${dsp.id}`,
+          code: 'DUPLICATE_TRANSACTION',
+          severity: 'critical',
+          category: dsp.category,
+          title: `تكرار في معرف العملية (Transaction ID)`,
+          description: `معرف العملية ${dsp.transactionId} مكرر في المنصرف.`,
+          details: { recordId: dsp.id, transactionId: dsp.transactionId },
+          detectedAt: now
+        });
+      } else {
+        seenTxIds.set(dsp.transactionId, dsp.id);
+      }
+    }
   }
+
+  // 3. Detect Demo / Seed / Mock items (Rule 7)
+  const isDemo = (str: string = '') => {
+    const s = str.toLowerCase();
+    return s.includes('demo') || s.includes('seed') || s.includes('mock') || s.includes('تجريب') || s.includes('عينة');
+  };
+
+  for (const sup of db.supplies || []) {
+    if (isDemo(sup.id) || isDemo(sup.documentNumber) || isDemo(sup.notes) || isDemo(sup.supplierSource)) {
+      issues.push({
+        id: `demo-sup-${sup.id}`,
+        code: 'DEMO_TRANSACTION',
+        severity: 'critical',
+        category: sup.category,
+        title: `حركة توريد تجريبية / وهمية مكتشفة`,
+        description: `تم اكتشاف توريد يحمل وسوم تجريبية (${sup.documentNumber}).`,
+        details: { recordId: sup.id },
+        detectedAt: now
+      });
+    }
+  }
+
+  for (const dsp of db.dispenses || []) {
+    if (isDemo(dsp.id) || isDemo(dsp.citizenName) || isDemo(dsp.notes)) {
+      issues.push({
+        id: `demo-dsp-${dsp.id}`,
+        code: 'DEMO_TRANSACTION',
+        severity: 'critical',
+        category: dsp.category,
+        title: `حركة صرف تجريبية / وهمية مكتشفة`,
+        description: `تم اكتشاف صرف يحمل وسوم تجريبية (${dsp.citizenName}).`,
+        details: { recordId: dsp.id },
+        detectedAt: now
+      });
+    }
+  }
+
+  // 4. Detect Tombstone returns (Rule 16)
+  const tombstoneMap = new Set((db.tombstones || []).map(t => t.recordId));
+  for (const sup of db.supplies || []) {
+    if (tombstoneMap.has(sup.id)) {
+      issues.push({
+        id: `tombstone-return-sup-${sup.id}`,
+        code: 'DELETED_TRANSACTION_RETURNING',
+        severity: 'critical',
+        category: sup.category,
+        title: `عودة حركة توريد محذوفة سابقاً`,
+        description: `السجل ${sup.id} مسجل في قائمة المحذوفات (Tombstones) ولكنه ظهر في البيانات.`,
+        details: { recordId: sup.id },
+        detectedAt: now
+      });
+    }
+  }
+
+  for (const dsp of db.dispenses || []) {
+    if (tombstoneMap.has(dsp.id)) {
+      issues.push({
+        id: `tombstone-return-dsp-${dsp.id}`,
+        code: 'DELETED_TRANSACTION_RETURNING',
+        severity: 'critical',
+        category: dsp.category,
+        title: `عودة حركة صرف محذوفة سابقاً`,
+        description: `السجل ${dsp.id} مسجل في قائمة المحذوفات (Tombstones) ولكنه ظهر في البيانات.`,
+        details: { recordId: dsp.id },
+        detectedAt: now
+      });
+    }
+  }
+
+  // 5. Detect Reset Boundary Violations (Rule 19)
+  if (db.resetBoundary && db.resetBoundary.resetTimestamp) {
+    const boundaryTime = new Date(db.resetBoundary.resetTimestamp).getTime();
+    for (const sup of db.supplies || []) {
+      const recTime = new Date(sup.updatedAt || sup.date).getTime();
+      if (recTime < boundaryTime - 1000) {
+        issues.push({
+          id: `boundary-sup-${sup.id}`,
+          code: 'RESET_BOUNDARY_VIOLATION',
+          severity: 'critical',
+          category: sup.category,
+          title: `حركة توريد سابقة لحد تصفير المصنع`,
+          description: `الحركة ${sup.documentNumber} تسبق توقيت تصفير المصنع المعتمد (${db.resetBoundary.resetTimestamp}).`,
+          details: { recordId: sup.id, updatedAt: sup.updatedAt },
+          detectedAt: now
+        });
+      }
+    }
+  }
+
+  const criticalIssues = issues.filter(i => i.severity === 'critical').length;
+  const warningIssues = issues.filter(i => i.severity === 'warning').length;
 
   return {
     timestamp: now,
-    isValid: criticalCount === 0,
-    criticalIssuesCount: criticalCount,
-    warningsCount: warningCount,
+    hasErrors: criticalIssues > 0,
+    totalIssues: issues.length,
+    criticalIssues,
+    warningIssues,
     issues,
-    stockAudit,
-    onlineOnlyRecords,
-    summary,
+    categoryAudits: STOCK_CATEGORIES.map(c => audits.audits[c])
   };
 }

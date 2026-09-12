@@ -1,8 +1,16 @@
+# Dependencies
 node_modules/
-build/
+.npm/
+
+# Production output
 dist/
-coverage/
-.DS_Store
+
+# Operating database & backups (Data protection requirement)
+data/database.json
+data/processedTransactions.json
+data/backups/
+data/*SNAPSHOT*
+
+# Environment and logs
+.env
 *.log
-.env*
-!.env.example

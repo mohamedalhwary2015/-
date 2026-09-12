@@ -1,9 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useState, useEffect } from 'react';
 
-export function useOnlineStatus() {
-  const [isOnline, setIsOnline] = useState(
-    typeof navigator !== 'undefined' ? navigator.onLine : true
-  );
+export function useOnlineStatus(): boolean {
+  const [isOnline, setIsOnline] = useState<boolean>(() => {
+    if (typeof navigator !== 'undefined' && typeof navigator.onLine === 'boolean') {
+      return navigator.onLine;
+    }
+    return true;
+  });
 
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
