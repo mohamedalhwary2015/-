@@ -669,7 +669,28 @@ export function manualAdjustStock(
     newValue: newActualStock
   });
 
-  return saveDatabase(db);
+  const saved = saveDatabase(db);
+  const transactionId = generateStableId('tx-adj');
+  const adjId = generateStableId('adj');
+  enqueueTransaction(
+    'MANUAL_STOCK_ADJUSTMENT',
+    adjId,
+    1,
+    {
+      id: adjId,
+      category,
+      previousStock: oldStock,
+      newActualStock,
+      difference,
+      reason,
+      notes,
+      performedBy: performedBy || db.officeSettings?.currentEmployee || 'غير محدد',
+      timestamp: now,
+      transactionId
+    },
+    transactionId
+  );
+  return saved;
 }
 
 // ---------------------------------------------------------------------------
@@ -717,7 +738,25 @@ export function setOpeningBalance(
     newValue: quantity
   });
 
-  return saveDatabase(db);
+  const saved = saveDatabase(db);
+  const transactionId = generateStableId('tx-opb');
+  const opbId = generateStableId('opb');
+  enqueueTransaction(
+    'OPENING_BALANCE_SET',
+    opbId,
+    1,
+    {
+      id: opbId,
+      category,
+      quantity,
+      inventoryDate: now.split('T')[0],
+      inventoryKeeper: inventoryKeeper || db.officeSettings?.currentEmployee || 'غير محدد',
+      notes,
+      transactionId
+    },
+    transactionId
+  );
+  return saved;
 }
 
 // ---------------------------------------------------------------------------

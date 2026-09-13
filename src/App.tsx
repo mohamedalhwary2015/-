@@ -7,6 +7,7 @@ import { useAutoSync } from './hooks/useAutoSync';
 
 import { Header } from './components/Header';
 import { Sidebar, TabType } from './components/Sidebar';
+import { Breadcrumb } from './components/Breadcrumb';
 import { Dashboard } from './components/Dashboard';
 import { StockManagement } from './components/StockManagement';
 import { DispenseScreen } from './components/DispenseScreen';
@@ -83,6 +84,8 @@ export function App() {
 
         {/* Dynamic Content Main Area */}
         <main className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8 overflow-y-auto max-w-7xl mx-auto w-full">
+          <Breadcrumb activeTab={activeTab} onNavigate={(tab) => setActiveTab(tab)} />
+
           {activeTab === 'dashboard' && (
             <Dashboard db={db} onNavigate={(tab) => setActiveTab(tab)} />
           )}
@@ -93,6 +96,10 @@ export function App() {
 
           {activeTab === 'supplies' && (
             <StockManagement db={db} initialTab="supplies" />
+          )}
+
+          {activeTab === 'manual_adjustments' && (
+            <StockManagement db={db} initialTab="adjustments" />
           )}
 
           {activeTab === 'stock_ledger' && (
@@ -107,6 +114,30 @@ export function App() {
             />
           )}
 
+          {activeTab === 'birth_certificates' && (
+            <DispenseScreen
+              db={db}
+              filterMode="birth_certificates"
+              onPrintReceipt={(rec) => setSelectedReceiptForPrint(rec)}
+            />
+          )}
+
+          {activeTab === 'death_certificates' && (
+            <DispenseScreen
+              db={db}
+              filterMode="death_certificates"
+              onPrintReceipt={(rec) => setSelectedReceiptForPrint(rec)}
+            />
+          )}
+
+          {activeTab === 'notifications' && (
+            <DispenseScreen
+              db={db}
+              filterMode="notifications"
+              onPrintReceipt={(rec) => setSelectedReceiptForPrint(rec)}
+            />
+          )}
+
           {activeTab === 'documents' && (
             <DispenseScreen
               db={db}
@@ -115,7 +146,7 @@ export function App() {
             />
           )}
 
-          {activeTab === 'dispense' && (
+          {(activeTab === 'dispense' || activeTab === 'dispense_all') && (
             <DispenseScreen
               db={db}
               filterMode="all"
@@ -150,7 +181,19 @@ export function App() {
             <ItemDispenseReportsScreen db={db} />
           )}
 
-          {activeTab === 'backup_restore' && (
+          {activeTab === 'item_movement_report' && (
+            <StockLedgerScreen db={db} />
+          )}
+
+          {activeTab === 'stock_balances_report' && (
+            <StockManagement db={db} initialTab="stocks" />
+          )}
+
+          {activeTab === 'inventory_audit_report' && (
+            <DiagnosticsScreen db={db} onRefreshDb={refreshDb} />
+          )}
+
+          {(activeTab === 'backup_restore' || activeTab === 'sync_status') && (
             <BackupRestoreScreen
               db={db}
               onFactoryResetComplete={() => {

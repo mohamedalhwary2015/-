@@ -26,7 +26,7 @@ import { validateDispenseAvailability } from '../services/stockService';
 interface DispenseScreenProps {
   db: DatabaseSchema;
   onPrintReceipt?: (record: DispenseRecord) => void;
-  filterMode?: 'all' | 'health_cards' | 'documents';
+  filterMode?: 'all' | 'health_cards' | 'documents' | 'birth_certificates' | 'death_certificates' | 'notifications';
 }
 
 export const DispenseScreen: React.FC<DispenseScreenProps> = ({
@@ -44,17 +44,17 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
   const [nationalId, setNationalId] = useState('');
   const [childOrDeceasedName, setChildOrDeceasedName] = useState('');
   const [transactionType, setTransactionType] = useState<TransactionType>(
-    filterMode === 'health_cards' ? 'health_card_male' : 'birth'
+    filterMode === 'health_cards' ? 'health_card_male' : filterMode === 'death_certificates' ? 'death' : filterMode === 'notifications' ? 'birth_notification' : 'birth'
   );
   const [gender, setGender] = useState<'ذكر' | 'أنثى' | 'غير محدد'>(
     filterMode === 'health_cards' ? 'ذكر' : 'ذكر'
   );
   const [category, setCategory] = useState<StockCategory>(
-    filterMode === 'health_cards' ? 'health_cards_male' : 'birth_certificates'
+    filterMode === 'health_cards' ? 'health_cards_male' : filterMode === 'death_certificates' ? 'death_certificates' : filterMode === 'notifications' ? 'birth_notifications' : 'birth_certificates'
   );
   const [quantity, setQuantity] = useState<number>(1);
   const [collectedAmount, setCollectedAmount] = useState<number>(
-    filterMode === 'health_cards' ? (db.officeSettings?.healthCardMaleFee ?? 50) : (db.officeSettings?.birthCertFee ?? 0)
+    filterMode === 'health_cards' ? (db.officeSettings?.healthCardMaleFee ?? 50) : filterMode === 'birth_certificates' ? (db.officeSettings?.birthCertFee ?? 0) : filterMode === 'death_certificates' ? (db.officeSettings?.deathCertFee ?? 0) : 0
   );
   const [receiptNumber, setReceiptNumber] = useState('');
   const [serialNumber, setSerialNumber] = useState('');
@@ -100,6 +100,21 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
       setCategory('health_cards_male');
       setGender('ذكر');
       setCollectedAmount(db.officeSettings?.healthCardMaleFee ?? 50);
+    } else if (filterMode === 'birth_certificates') {
+      setTransactionType('birth');
+      setCategory('birth_certificates');
+      setGender('ذكر');
+      setCollectedAmount(db.officeSettings?.birthCertFee ?? 0);
+    } else if (filterMode === 'death_certificates') {
+      setTransactionType('death');
+      setCategory('death_certificates');
+      setGender('غير محدد');
+      setCollectedAmount(db.officeSettings?.deathCertFee ?? 0);
+    } else if (filterMode === 'notifications') {
+      setTransactionType('birth_notification');
+      setCategory('birth_notifications');
+      setGender('غير محدد');
+      setCollectedAmount(0);
     } else {
       setTransactionType('birth');
       setCategory('birth_certificates');
@@ -198,6 +213,12 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
       if (d.category !== 'health_cards_male' && d.category !== 'health_cards_female') return false;
       if (subFilter === 'male' && d.category !== 'health_cards_male') return false;
       if (subFilter === 'female' && d.category !== 'health_cards_female') return false;
+    } else if (filterMode === 'birth_certificates') {
+      if (d.category !== 'birth_certificates') return false;
+    } else if (filterMode === 'death_certificates') {
+      if (d.category !== 'death_certificates') return false;
+    } else if (filterMode === 'notifications') {
+      if (d.category !== 'birth_notifications' && d.category !== 'death_notifications') return false;
     } else if (filterMode === 'documents') {
       if (d.category === 'health_cards_male' || d.category === 'health_cards_female') return false;
     }
@@ -216,18 +237,36 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
 
   const screenTitle = filterMode === 'health_cards'
     ? 'صرف وإصدار البطاقات الصحية (ذكور / إناث)'
+    : filterMode === 'birth_certificates'
+    ? 'صرف شهادات وقيد الميلاد للمواطنين'
+    : filterMode === 'death_certificates'
+    ? 'صرف شهادات وقيد الوفاة'
+    : filterMode === 'notifications'
+    ? 'صرف بلاغات وإخطارات الولادة والوفاة'
     : filterMode === 'documents'
     ? 'صرف الشهادات والمستندات الرسمية (مواليد / وفيات)'
-    : 'صرف المستندات والوثائق للمواطنين';
+    : 'سجل جميع المنصرف من المستندات والوثائق';
 
   const screenSubtitle = filterMode === 'health_cards'
     ? 'تسجيل صرف البطاقات الصحية للمواليد وبدل الفاقد مع تسجيل رسوم التحصيل المقررة وقسائم السداد'
+    : filterMode === 'birth_certificates'
+    ? 'تسجيل صرف وتوثيق شهادات الميلاد وقيد رسوم الاستخراج وأرقام القسائم والإيصالات'
+    : filterMode === 'death_certificates'
+    ? 'تسجيل صرف شهادات الوفاة وبيانات المتوفى وتوثيق الرسوم والمتحصلات الرسمية'
+    : filterMode === 'notifications'
+    ? 'توثيق صرف دفاتر بلاغات الولادة وإخطارات الوفاة للمستشفيات والوحدات الصحية'
     : filterMode === 'documents'
     ? 'تسجيل صرف شهادات الميلاد والوفاة وبلاغات القيد للمواطنين وأولياء الأمور'
-    : 'تسجيل صرف شهادات الميلاد والوفاة والبطاقات الصحية مع قيد المبالغ المحصلة';
+    : 'عرض وبحث شامل لكافة حركات الصرف لجميع الأصناف والشهادات والمتحصلات المالية';
 
   const addButtonText = filterMode === 'health_cards'
     ? 'صرف بطاقة صحية جديدة'
+    : filterMode === 'birth_certificates'
+    ? 'صرف شهادة ميلاد'
+    : filterMode === 'death_certificates'
+    ? 'صرف شهادة وفاة'
+    : filterMode === 'notifications'
+    ? 'صرف دفتر إخطار / بلاغ'
     : filterMode === 'documents'
     ? 'صرف شهادة / مستند جديد'
     : 'صرف مستند جديد';

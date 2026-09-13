@@ -12,16 +12,75 @@ import {
   DatabaseSchema,
   IntegrityReport,
   StockCategory,
-  STOCK_CATEGORIES
+  STOCK_CATEGORIES,
+  CATEGORY_LABELS
 } from '../types';
 import { runFullIntegrityCheck } from '../services/stockService';
-import { saveDatabase } from './db';
+import { saveDatabase, generateStableId } from './db';
+import { enqueueTransaction } from './syncManager';
+
+export interface SuspectedRecord {
+  id: string;
+  type: 'supply' | 'dispense';
+  date: string;
+  category: StockCategory;
+  categoryLabel: string;
+  quantity: number;
+  title: string;
+  suspicionReason: string;
+}
 
 export interface DiagnosticResult {
   report: IntegrityReport;
   canSafelyPurgeDuplicates: boolean;
-  canSafelyPurgeDemos: boolean;
+  suspectedRecords: SuspectedRecord[];
   unconfirmedCount: number;
+}
+
+/**
+ * Identifies suspected demo records for explicit manual review (Rule 27)
+ */
+export function getSuspectedDemoRecords(db: DatabaseSchema): SuspectedRecord[] {
+  const isDemo = (str: string = '') => {
+    const s = str.toLowerCase();
+    return s.includes('demo') || s.includes('seed') || s.includes('mock') || s.includes('تجريب') || s.includes('عينة');
+  };
+
+  const results: SuspectedRecord[] = [];
+
+  for (const s of (db.supplies || [])) {
+    if (s.isDeleted) continue;
+    if (isDemo(s.id) || isDemo(s.documentNumber) || isDemo(s.notes) || isDemo(s.supplierSource)) {
+      results.push({
+        id: s.id,
+        type: 'supply',
+        date: s.date,
+        category: s.category,
+        categoryLabel: CATEGORY_LABELS[s.category] || s.category,
+        quantity: s.quantity,
+        title: `توريد رقم: ${s.documentNumber || s.id} (${s.supplierSource || 'مورد'})`,
+        suspicionReason: isDemo(s.documentNumber) ? 'رقم المستند يحتوي كلمات تجريبية' : 'الملاحظات أو المصدر يحتوي وسماً تجريبياً'
+      });
+    }
+  }
+
+  for (const d of (db.dispenses || [])) {
+    if (d.isDeleted) continue;
+    if (isDemo(d.id) || isDemo(d.citizenName) || isDemo(d.notes)) {
+      results.push({
+        id: d.id,
+        type: 'dispense',
+        date: d.date,
+        category: d.category,
+        categoryLabel: CATEGORY_LABELS[d.category] || d.category,
+        quantity: d.quantity,
+        title: `صرف لمواطن: ${d.citizenName || d.id}`,
+        suspicionReason: isDemo(d.citizenName) ? 'اسم المواطن يحتوي كلمات تجريبية' : 'الملاحظات تحتوي وسماً تجريبياً'
+      });
+    }
+  }
+
+  return results;
 }
 
 /**
@@ -31,7 +90,7 @@ export function diagnoseDatabase(db: DatabaseSchema): DiagnosticResult {
   const report = runFullIntegrityCheck(db);
 
   const duplicateIssues = report.issues.filter(i => i.code === 'DUPLICATE_TRANSACTION');
-  const demoIssues = report.issues.filter(i => i.code === 'DEMO_TRANSACTION');
+  const suspectedRecords = getSuspectedDemoRecords(db);
   const unconfirmedCount = [
     ...(db.supplies || []).filter(s => s.syncStatus === 'unconfirmed'),
     ...(db.dispenses || []).filter(d => d.syncStatus === 'unconfirmed')
@@ -40,7 +99,7 @@ export function diagnoseDatabase(db: DatabaseSchema): DiagnosticResult {
   return {
     report,
     canSafelyPurgeDuplicates: duplicateIssues.length > 0,
-    canSafelyPurgeDemos: demoIssues.length > 0,
+    suspectedRecords,
     unconfirmedCount
   };
 }
@@ -93,39 +152,86 @@ export function safelyPurgeDuplicateTransactions(db: DatabaseSchema, operatorNam
 }
 
 /**
- * Safely purges demo / seed items if found, protecting real office records
+ * Explicit Manual Purge for a single suspected record (Rule 27)
+ * Requires operator decision whether to reverse its stock impact or not.
+ * Generates Tombstone and enqueues sync delete.
  */
-export function safelyPurgeDemoData(db: DatabaseSchema, operatorName: string = 'مدير النظام'): {
-  purgedCount: number;
-} {
-  const isDemo = (str: string = '') => {
-    const s = str.toLowerCase();
-    return s.includes('demo') || s.includes('seed') || s.includes('mock') || s.includes('تجريب') || s.includes('عينة');
-  };
+export function purgeSingleSuspectedRecord(
+  db: DatabaseSchema,
+  recordId: string,
+  recordType: 'supply' | 'dispense',
+  adjustStock: boolean,
+  operatorName: string = 'مدير النظام'
+): { success: boolean; message: string } {
+  const now = new Date().toISOString();
+  const txId = generateStableId('tx-del');
 
-  const initialSupplies = db.supplies.length;
-  const initialDispenses = db.dispenses.length;
+  if (recordType === 'supply') {
+    const idx = db.supplies.findIndex(s => s.id === recordId);
+    if (idx === -1) return { success: false, message: 'السجل غير موجود أو تم حذفه مسبقاً' };
+    const sup = db.supplies[idx];
 
-  db.supplies = db.supplies.filter(
-    s => !isDemo(s.id) && !isDemo(s.documentNumber) && !isDemo(s.notes) && !isDemo(s.supplierSource)
-  );
+    if (adjustStock) {
+      const stock = db.stocks[sup.category];
+      if (stock) {
+        stock.currentStock -= sup.quantity;
+        stock.totalReceived -= sup.quantity;
+      }
+    }
 
-  db.dispenses = db.dispenses.filter(
-    d => !isDemo(d.id) && !isDemo(d.citizenName) && !isDemo(d.notes)
-  );
+    db.supplies.splice(idx, 1);
+    db.tombstones.push({
+      recordId,
+      recordType: 'supply',
+      transactionId: txId,
+      deletedAt: now,
+      version: (sup.version || 1) + 1
+    });
 
-  const purgedCount = (initialSupplies - db.supplies.length) + (initialDispenses - db.dispenses.length);
-
-  if (purgedCount > 0) {
     db.auditLogs.unshift({
-      id: `audit-${Date.now()}`,
-      timestamp: new Date().toISOString(),
-      action: 'إزالة البيانات التجريبية والوهمية',
-      details: `تم إزالة ${purgedCount} سجل تجريبي وهمي بنجاح دون المساس ببيانات المكتب الحقيقية`,
+      id: generateStableId('audit'),
+      timestamp: now,
+      action: 'حذف يدوي صريح لسجل توريد مشبوه',
+      category: sup.category,
+      details: `حذف التوريد رقم (${sup.documentNumber}) - ${adjustStock ? `تم خصم الكمية (${sup.quantity}) من الرصيد الفعلي` : 'تم الإبقاء على الرصيد الفعلي بدون تعديل'}`,
       performedBy: operatorName
     });
-    saveDatabase(db);
+
+    enqueueTransaction('SUPPLY_DELETE', recordId, (sup.version || 1) + 1, { id: recordId }, txId);
+  } else {
+    const idx = db.dispenses.findIndex(d => d.id === recordId);
+    if (idx === -1) return { success: false, message: 'السجل غير موجود أو تم حذفه مسبقاً' };
+    const dsp = db.dispenses[idx];
+
+    if (adjustStock) {
+      const stock = db.stocks[dsp.category];
+      if (stock) {
+        stock.currentStock += dsp.quantity;
+        stock.totalDispensed -= dsp.quantity;
+      }
+    }
+
+    db.dispenses.splice(idx, 1);
+    db.tombstones.push({
+      recordId,
+      recordType: 'dispense',
+      transactionId: txId,
+      deletedAt: now,
+      version: (dsp.version || 1) + 1
+    });
+
+    db.auditLogs.unshift({
+      id: generateStableId('audit'),
+      timestamp: now,
+      action: 'حذف يدوي صريح لسجل صرف مشبوه',
+      category: dsp.category,
+      details: `حذف المنصرف للمواطن (${dsp.citizenName}) - ${adjustStock ? `تمت استعادة الكمية (${dsp.quantity}) إلى الرصيد الفعلي` : 'تم الإبقاء على الرصيد الفعلي بدون تعديل'}`,
+      performedBy: operatorName
+    });
+
+    enqueueTransaction('DISPENSE_DELETE', recordId, (dsp.version || 1) + 1, { id: recordId }, txId);
   }
 
-  return { purgedCount };
+  saveDatabase(db);
+  return { success: true, message: 'تم حذف السجل بنجاح مع توثيق العملية بالكامل ومزامنتها' };
 }

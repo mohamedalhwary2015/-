@@ -25,11 +25,13 @@ import { calculateTheoreticalStockForCategory } from '../services/stockService';
 
 interface StockManagementProps {
   db: DatabaseSchema;
-  initialTab?: 'stocks' | 'supplies';
+  initialTab?: 'stocks' | 'supplies' | 'adjustments';
 }
 
 export const StockManagement: React.FC<StockManagementProps> = ({ db, initialTab = 'stocks' }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'stocks' | 'supplies'>(initialTab);
+  const [activeSubTab, setActiveSubTab] = useState<'stocks' | 'supplies'>(
+    initialTab === 'supplies' ? 'supplies' : 'stocks'
+  );
 
   // Supply Form State
   const [showSupplyModal, setShowSupplyModal] = useState(false);
@@ -44,7 +46,7 @@ export const StockManagement: React.FC<StockManagementProps> = ({ db, initialTab
   const [supplyNotes, setSupplyNotes] = useState('');
 
   // Manual Adjustment Modal State (Rule 21)
-  const [showAdjustModal, setShowAdjustModal] = useState(false);
+  const [showAdjustModal, setShowAdjustModal] = useState(initialTab === 'adjustments');
   const [adjustCategory, setAdjustCategory] = useState<StockCategory>('birth_certificates');
   const [newActualStock, setNewActualStock] = useState<number>(0);
   const [adjustReason, setAdjustReason] = useState<AdjustmentReason>('inventory_count');

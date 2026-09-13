@@ -396,6 +396,46 @@ export function mergeServerDataSafely(localDb: DatabaseSchema, serverData: Parti
     }
   }
 
+  // 5. Opening Balances merge
+  if (serverData.openingBalances) {
+    localDb.openingBalances = localDb.openingBalances || ({} as any);
+    for (const [cat, ob] of Object.entries(serverData.openingBalances)) {
+      const stockCat = cat as StockCategory;
+      const localOb = localDb.openingBalances[stockCat];
+      if (!localOb || (ob && ob.quantity !== localOb.quantity)) {
+        localDb.openingBalances[stockCat] = ob;
+        const stock = localDb.stocks[stockCat];
+        if (stock) {
+          stock.openingStock = ob.quantity;
+          if (stock.currentStock === 0 && stock.totalReceived === 0 && stock.totalDispensed === 0) {
+            stock.currentStock = ob.quantity;
+          }
+        }
+        changed = true;
+      }
+    }
+  }
+
+  // 6. Audit logs merge (for manual adjustments visibility across terminals)
+  if (serverData.auditLogs && Array.isArray(serverData.auditLogs)) {
+    const localAuditIds = new Set((localDb.auditLogs || []).map(a => a.id));
+    for (const sa of serverData.auditLogs) {
+      if (!localAuditIds.has(sa.id)) {
+        localDb.auditLogs.unshift(sa);
+        localAuditIds.add(sa.id);
+        // If it's a manual adjustment from another terminal with newer timestamp, apply stock update
+        if (sa.action === 'تسوية رصيد جرد يدوي صريح' && sa.category && sa.newValue !== undefined) {
+          const stock = localDb.stocks[sa.category];
+          if (stock && (!stock.lastUpdated || sa.timestamp > stock.lastUpdated)) {
+            stock.currentStock = sa.newValue;
+            stock.lastUpdated = sa.timestamp;
+          }
+        }
+        changed = true;
+      }
+    }
+  }
+
   if (changed) {
     saveDatabase(localDb, false);
   }

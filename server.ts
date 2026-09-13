@@ -195,6 +195,37 @@ app.post('/api/sync/transactions', (req, res) => {
       });
     }
 
+    // Pre-flight Batch Validation (Rules 16 & 17)
+    const validOperationTypes = new Set([
+      'SUPPLY_ADD', 'SUPPLY_UPDATE', 'SUPPLY_DELETE',
+      'DISPENSE_ADD', 'DISPENSE_UPDATE', 'DISPENSE_DELETE',
+      'LATE_REG_ADD', 'LATE_REG_UPDATE', 'LATE_REG_DELETE',
+      'MANUAL_STOCK_ADJUSTMENT', 'OPENING_BALANCE_SET'
+    ]);
+
+    for (const item of transactions as SyncTransactionItem[]) {
+      if (!item || !item.operationType || !item.recordId || !item.transactionId) {
+        return res.status(400).json({ error: 'حركة غير مكتملة المعرفات الأساسية', item });
+      }
+      if (!validOperationTypes.has(item.operationType)) {
+        return res.status(400).json({ error: `نوع عملية غير مصرح به: ${item.operationType}`, item });
+      }
+      if (typeof item.version !== 'number' || item.version < 1) {
+        return res.status(400).json({ error: 'رقم إصدار الحركة غير صالح', item });
+      }
+      if (item.payload && 'quantity' in item.payload) {
+        const qty = Number(item.payload.quantity);
+        if (isNaN(qty) || qty < 0) {
+          return res.status(400).json({ error: 'كمية الحركة غير صالحة أو سالبة', item });
+        }
+      }
+      if (item.payload && 'category' in item.payload && item.payload.category) {
+        if (!STOCK_CATEGORIES.includes(item.payload.category as StockCategory)) {
+          return res.status(400).json({ error: `صنف غير موجود في المنظومة: ${item.payload.category}`, item });
+        }
+      }
+    }
+
     let modified = false;
     const tombstoneSet = new Set((serverDb.tombstones || []).map(t => t.recordId));
 
@@ -217,6 +248,62 @@ app.post('/api/sync/transactions', (req, res) => {
 
       // Execute transaction on server state
       switch (operationType) {
+        case 'MANUAL_STOCK_ADJUSTMENT': {
+          const cat = payload.category as StockCategory;
+          const stock = serverDb.stocks[cat];
+          if (stock) {
+            const oldStock = stock.currentStock;
+            const newActual = Number(payload.newActualStock) || 0;
+            const diff = newActual - oldStock;
+            if (payload.reason === 'damaged' && diff < 0) {
+              stock.damagedOrCancelled += Math.abs(diff);
+            }
+            stock.currentStock = newActual;
+            stock.lastUpdated = new Date().toISOString();
+            serverDb.auditLogs.unshift({
+              id: payload.id || `audit-${Date.now()}`,
+              timestamp: payload.timestamp || new Date().toISOString(),
+              action: 'تسوية رصيد جرد يدوي صريح',
+              category: cat,
+              details: `تعديل الرصيد الفعلي من ${oldStock} إلى ${newActual} (الفارق: ${diff > 0 ? `+${diff}` : diff}) - السبب: ${payload.reason} - ${payload.notes || ''}`,
+              performedBy: payload.performedBy || 'غير محدد',
+              previousValue: oldStock,
+              newValue: newActual
+            });
+            modified = true;
+          }
+          break;
+        }
+        case 'OPENING_BALANCE_SET': {
+          const cat = payload.category as StockCategory;
+          const qty = Number(payload.quantity) || 0;
+          serverDb.openingBalances[cat] = {
+            category: cat,
+            quantity: qty,
+            inventoryDate: payload.inventoryDate || new Date().toISOString().split('T')[0],
+            inventoryKeeper: payload.inventoryKeeper || 'غير محدد',
+            notes: payload.notes || ''
+          };
+          const stock = serverDb.stocks[cat];
+          if (stock) {
+            stock.openingStock = qty;
+            if (stock.currentStock === 0 && stock.totalReceived === 0 && stock.totalDispensed === 0) {
+              stock.currentStock = qty;
+            }
+            stock.lastUpdated = new Date().toISOString();
+          }
+          serverDb.auditLogs.unshift({
+            id: payload.id || `audit-${Date.now()}`,
+            timestamp: payload.timestamp || new Date().toISOString(),
+            action: 'تحديد رصيد أول المدة',
+            category: cat,
+            details: `اعتماد رصيد أول المدة للصنف بقيمة ${qty} بواسطة ${payload.inventoryKeeper || 'غير محدد'}`,
+            performedBy: payload.inventoryKeeper || 'غير محدد',
+            newValue: qty
+          });
+          modified = true;
+          break;
+        }
         case 'SUPPLY_ADD': {
           const exists = serverDb.supplies.some(s => s.id === recordId || s.transactionId === transactionId);
           if (!exists) {
