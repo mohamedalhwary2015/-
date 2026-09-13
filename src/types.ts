@@ -203,6 +203,7 @@ export interface SyncTransactionItem {
   version: number;
   updatedAt: string;
   deviceId: string;
+  resetBoundary?: ResetBoundary;
   payload: any;
 }
 
@@ -215,7 +216,14 @@ export interface AuditLogEntry {
   performedBy: string;
   previousValue?: any;
   newValue?: any;
+  oldStock?: number;
+  newActualStock?: number;
+  difference?: number;
+  reason?: string;
+  notes?: string;
   transactionId?: string;
+  operationKey?: string;
+  deviceId?: string;
   operationType?: OperationType;
 }
 

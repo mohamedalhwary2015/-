@@ -87,6 +87,7 @@ export function enqueueTransaction(
   const operationKey = `${operationType}:${recordId}:${version}`;
   const deviceId = getDeviceId();
   const now = new Date().toISOString();
+  const db = loadDatabase();
 
   // If already in queue with identical key, replace in place
   const existingIdx = queue.findIndex(q => q.operationKey === operationKey);
@@ -98,6 +99,7 @@ export function enqueueTransaction(
     version,
     updatedAt: now,
     deviceId,
+    resetBoundary: db?.resetBoundary,
     payload
   };
 

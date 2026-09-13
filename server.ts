@@ -10,6 +10,7 @@ import path from 'path';
 import {
   DatabaseSchema,
   SyncTransactionItem,
+  OperationType,
   ResetBoundary,
   STOCK_CATEGORIES,
   StockCategory,
@@ -169,18 +170,13 @@ app.post('/api/sync/transactions', (req, res) => {
     const processedKeys = loadProcessedKeys();
     const acknowledgedKeys: string[] = [];
 
-    // 1. Reset Boundary Check (Rule 19)
-    if (serverDb.resetBoundary && serverDb.resetBoundary.resetTimestamp) {
-      const serverResetTime = new Date(serverDb.resetBoundary.resetTimestamp).getTime();
-
-      // If client is from an older reset or missing boundary
-      if (
-        !resetBoundary ||
-        (resetBoundary.resetId && resetBoundary.resetId !== serverDb.resetBoundary.resetId &&
-         new Date(resetBoundary.resetTimestamp).getTime() < serverResetTime)
-      ) {
+    // 1. Strict Reset Boundary Check (Point 1: Server is ultimate source of truth, no old device queue accepted)
+    if (serverDb.resetBoundary && serverDb.resetBoundary.resetId) {
+      const clientResetId = resetBoundary?.resetId;
+      if (!clientResetId || clientResetId !== serverDb.resetBoundary.resetId) {
         return res.status(409).json({
           code: 'RESET_BOUNDARY_VIOLATION',
+          error: 'RESET_BOUNDARY_VIOLATION',
           message: 'تم تصفير النظام مركزياً. الحركات المتبقية من الجلسة السابقة مرفوضة.',
           serverBoundary: serverDb.resetBoundary
         });
@@ -195,33 +191,118 @@ app.post('/api/sync/transactions', (req, res) => {
       });
     }
 
-    // Pre-flight Batch Validation (Rules 16 & 17)
-    const validOperationTypes = new Set([
+    // Pre-flight Batch & Item Validation (Point 2: Never trust client data blindly)
+    const validOperationTypes = new Set<OperationType>([
       'SUPPLY_ADD', 'SUPPLY_UPDATE', 'SUPPLY_DELETE',
       'DISPENSE_ADD', 'DISPENSE_UPDATE', 'DISPENSE_DELETE',
       'LATE_REG_ADD', 'LATE_REG_UPDATE', 'LATE_REG_DELETE',
       'MANUAL_STOCK_ADJUSTMENT', 'OPENING_BALANCE_SET'
     ]);
 
+    const seenBatchKeys = new Set<string>();
+
     for (const item of transactions as SyncTransactionItem[]) {
-      if (!item || !item.operationType || !item.recordId || !item.transactionId) {
-        return res.status(400).json({ error: 'حركة غير مكتملة المعرفات الأساسية', item });
+      if (!item || typeof item !== 'object') {
+        return res.status(400).json({ error: 'حركة غير صالحة', item });
       }
-      if (!validOperationTypes.has(item.operationType)) {
-        return res.status(400).json({ error: `نوع عملية غير مصرح به: ${item.operationType}`, item });
+
+      const {
+        transactionId,
+        operationKey,
+        recordId,
+        operationType,
+        version,
+        updatedAt,
+        deviceId: itemDeviceId,
+        resetBoundary: itemResetBoundary,
+        payload
+      } = item;
+
+      // Required fields non-empty check
+      if (!transactionId || typeof transactionId !== 'string' || !transactionId.trim()) {
+        return res.status(400).json({ error: 'معرف الحركة transactionId مفقود أو غير صالح', item });
       }
-      if (typeof item.version !== 'number' || item.version < 1) {
+      if (!operationKey || typeof operationKey !== 'string' || !operationKey.trim()) {
+        return res.status(400).json({ error: 'مفتاح العملية operationKey مفقود أو غير صالح', item });
+      }
+      if (!recordId || typeof recordId !== 'string' || !recordId.trim()) {
+        return res.status(400).json({ error: 'معرف السجل recordId مفقود أو غير صالح', item });
+      }
+      if (!operationType || !validOperationTypes.has(operationType)) {
+        return res.status(400).json({ error: `نوع عملية غير مصرح به: ${operationType}`, item });
+      }
+      if (typeof version !== 'number' || !Number.isInteger(version) || version < 1) {
         return res.status(400).json({ error: 'رقم إصدار الحركة غير صالح', item });
       }
-      if (item.payload && 'quantity' in item.payload) {
-        const qty = Number(item.payload.quantity);
-        if (isNaN(qty) || qty < 0) {
+      if (!updatedAt || typeof updatedAt !== 'string' || isNaN(new Date(updatedAt).getTime())) {
+        return res.status(400).json({ error: 'تاريخ التحديث updatedAt غير صالح', item });
+      }
+
+      const effectiveDeviceId = itemDeviceId || deviceId;
+      if (!effectiveDeviceId || typeof effectiveDeviceId !== 'string' || !effectiveDeviceId.trim()) {
+        return res.status(400).json({ error: 'معرف الجهاز deviceId مفقود أو غير صالح', item });
+      }
+
+      // Format check: operationKey format must start with ${operationType}:${recordId}
+      const expectedPrefix = `${operationType}:${recordId}`;
+      if (!operationKey.startsWith(expectedPrefix)) {
+        return res.status(400).json({ error: 'صيغة مفتاح العملية operationKey غير متطابقة مع بيانات الحركة', item });
+      }
+
+      // No duplicate operationKey in the same batch
+      if (seenBatchKeys.has(operationKey)) {
+        return res.status(400).json({ error: 'تكرار مفتاح العملية داخل نفس الحزمة المرسلة', item });
+      }
+      seenBatchKeys.add(operationKey);
+
+      // Reset Boundary check on transaction item level
+      const effectiveItemResetId = itemResetBoundary?.resetId || resetBoundary?.resetId;
+      if (serverDb.resetBoundary && serverDb.resetBoundary.resetId) {
+        if (!effectiveItemResetId || effectiveItemResetId !== serverDb.resetBoundary.resetId) {
+          return res.status(409).json({
+            code: 'RESET_BOUNDARY_VIOLATION',
+            error: 'RESET_BOUNDARY_VIOLATION',
+            message: 'تم تصفير النظام مركزياً. الحركات المتبقية من الجلسة السابقة مرفوضة.',
+            serverBoundary: serverDb.resetBoundary
+          });
+        }
+      }
+
+      // Payload validation
+      if (!payload || typeof payload !== 'object') {
+        return res.status(400).json({ error: 'بيانات الحركة payload مفقودة أو غير صالحة', item });
+      }
+
+      if ('quantity' in payload) {
+        const qty = Number(payload.quantity);
+        if (!Number.isFinite(qty) || qty < 0) {
           return res.status(400).json({ error: 'كمية الحركة غير صالحة أو سالبة', item });
         }
       }
-      if (item.payload && 'category' in item.payload && item.payload.category) {
-        if (!STOCK_CATEGORIES.includes(item.payload.category as StockCategory)) {
-          return res.status(400).json({ error: `صنف غير موجود في المنظومة: ${item.payload.category}`, item });
+
+      if ('category' in payload && payload.category) {
+        if (!STOCK_CATEGORIES.includes(payload.category as StockCategory)) {
+          return res.status(400).json({ error: `صنف غير موجود في المنظومة: ${payload.category}`, item });
+        }
+      }
+
+      if (operationType === 'MANUAL_STOCK_ADJUSTMENT') {
+        if (!payload.category || !STOCK_CATEGORIES.includes(payload.category as StockCategory)) {
+          return res.status(400).json({ error: 'صنف التسوية اليدوية غير صالح', item });
+        }
+        const newActual = Number(payload.newActualStock);
+        if (!Number.isFinite(newActual) || newActual < 0) {
+          return res.status(400).json({ error: 'الرصيد الفعلي الجديد للتسوية غير صالح أو سالب', item });
+        }
+      }
+
+      if (operationType === 'OPENING_BALANCE_SET') {
+        if (!payload.category || !STOCK_CATEGORIES.includes(payload.category as StockCategory)) {
+          return res.status(400).json({ error: 'صنف رصيد أول المدة غير صالح', item });
+        }
+        const qty = Number(payload.quantity);
+        if (!Number.isFinite(qty) || qty < 0) {
+          return res.status(400).json({ error: 'كمية رصيد أول المدة غير صالحة أو سالبة', item });
         }
       }
     }
@@ -232,15 +313,14 @@ app.post('/api/sync/transactions', (req, res) => {
     for (const item of transactions as SyncTransactionItem[]) {
       const { operationKey, operationType, recordId, payload, transactionId, version } = item;
 
-      // Idempotency check (Rule 12): executed exactly once
+      // Idempotency check (Point 3): executed exactly once
       if (processedKeys.has(operationKey)) {
         acknowledgedKeys.push(operationKey);
         continue;
       }
 
-      // Check tombstones (Rule 16)
+      // Check tombstones (Point 8): prevent resurrecting deleted records
       if (tombstoneSet.has(recordId) && !operationType.includes('DELETE')) {
-        // Record was previously deleted, do not resurrect!
         acknowledgedKeys.push(operationKey);
         processedKeys.add(operationKey);
         continue;
@@ -255,23 +335,63 @@ app.post('/api/sync/transactions', (req, res) => {
             const oldStock = stock.currentStock;
             const newActual = Number(payload.newActualStock) || 0;
             const diff = newActual - oldStock;
-            if (payload.reason === 'damaged' && diff < 0) {
-              stock.damagedOrCancelled += Math.abs(diff);
+            const prevStockInPayload = typeof payload.previousStock === 'number' ? payload.previousStock : (typeof payload.oldStock === 'number' ? payload.oldStock : oldStock);
+
+            // Point 6: Conflict detection for offline devices
+            // If another device changed stock while this device was offline (baseline mismatch and distinct adjustment exists)
+            const hasConflictingAdjustment = prevStockInPayload !== oldStock && serverDb.auditLogs.some(a =>
+              a.category === cat &&
+              (a.operationType === 'MANUAL_STOCK_ADJUSTMENT' || a.action === 'تسوية رصيد جرد يدوي صريح') &&
+              a.transactionId !== transactionId
+            );
+
+            if (hasConflictingAdjustment) {
+              // Register SYNC_CONFLICT - DO NOT silently overwrite!
+              serverDb.auditLogs.unshift({
+                id: `conflict-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                timestamp: new Date().toISOString(),
+                action: 'SYNC_CONFLICT',
+                category: cat,
+                details: `تعارض تسوية رصيد جرد بين جهازين للصنف (${cat}): الرصيد على الخادم (${oldStock}) بينما القيمة الواردة من الجهاز (${newActual})، تم رفض الاستبدال الصامت`,
+                performedBy: payload.performedBy || 'نظام مراقبة النزاعات والمزامنة',
+                previousValue: oldStock,
+                newValue: newActual,
+                oldStock,
+                newActualStock: newActual,
+                difference: diff,
+                reason: payload.reason,
+                notes: 'تم رفض الاستبدال الصامت للرصيد الفعلي بسبب وجود تعارض جرد أوفلاين',
+                transactionId,
+                operationKey,
+                deviceId: payload.deviceId || deviceId || 'غير محدد',
+                operationType: 'MANUAL_STOCK_ADJUSTMENT'
+              });
+            } else {
+              if (payload.reason === 'damaged' && diff < 0) {
+                stock.damagedOrCancelled += Math.abs(diff);
+              }
+              stock.currentStock = newActual;
+              stock.lastUpdated = new Date().toISOString();
+              serverDb.auditLogs.unshift({
+                id: payload.id || `audit-${Date.now()}`,
+                timestamp: payload.timestamp || new Date().toISOString(),
+                action: 'تسوية رصيد جرد يدوي صريح',
+                category: cat,
+                details: `تعديل الرصيد الفعلي من ${oldStock} إلى ${newActual} (الفارق: ${diff > 0 ? `+${diff}` : diff}) - السبب: ${payload.reason} - ${payload.notes || ''}`,
+                performedBy: payload.performedBy || 'غير محدد',
+                previousValue: oldStock,
+                newValue: newActual,
+                oldStock,
+                newActualStock: newActual,
+                difference: diff,
+                reason: payload.reason,
+                notes: payload.notes || '',
+                transactionId,
+                operationKey,
+                deviceId: payload.deviceId || deviceId || 'غير محدد',
+                operationType: 'MANUAL_STOCK_ADJUSTMENT'
+              });
             }
-            stock.currentStock = newActual;
-            stock.lastUpdated = new Date().toISOString();
-            serverDb.auditLogs.unshift({
-              id: payload.id || `audit-${Date.now()}`,
-              timestamp: payload.timestamp || new Date().toISOString(),
-              action: 'تسوية رصيد جرد يدوي صريح',
-              category: cat,
-              details: `تعديل الرصيد الفعلي من ${oldStock} إلى ${newActual} (الفارق: ${diff > 0 ? `+${diff}` : diff}) - السبب: ${payload.reason} - ${payload.notes || ''}`,
-              performedBy: payload.performedBy || 'غير محدد',
-              previousValue: oldStock,
-              newValue: newActual,
-              transactionId,
-              operationType: 'MANUAL_STOCK_ADJUSTMENT'
-            });
             modified = true;
           }
           break;

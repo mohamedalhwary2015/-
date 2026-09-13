@@ -660,6 +660,8 @@ export function manualAdjustStock(
 
   const transactionId = generateStableId('tx-adj');
   const adjId = generateStableId('adj');
+  const operationKey = `MANUAL_STOCK_ADJUSTMENT:${adjId}:1`;
+  const deviceId = getDeviceId();
 
   db.auditLogs.unshift({
     id: generateStableId('audit'),
@@ -670,7 +672,14 @@ export function manualAdjustStock(
     performedBy: performedBy || db.officeSettings.currentEmployee || 'غير محدد',
     previousValue: oldStock,
     newValue: newActualStock,
+    oldStock,
+    newActualStock,
+    difference,
+    reason,
+    notes,
     transactionId,
+    operationKey,
+    deviceId,
     operationType: 'MANUAL_STOCK_ADJUSTMENT'
   });
 
@@ -683,13 +692,16 @@ export function manualAdjustStock(
       id: adjId,
       category,
       previousStock: oldStock,
+      oldStock,
       newActualStock,
       difference,
       reason,
       notes,
       performedBy: performedBy || db.officeSettings?.currentEmployee || 'غير محدد',
       timestamp: now,
-      transactionId
+      transactionId,
+      operationKey,
+      deviceId
     },
     transactionId
   );
