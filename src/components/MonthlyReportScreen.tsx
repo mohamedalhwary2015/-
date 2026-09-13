@@ -192,14 +192,14 @@ export const MonthlyReportScreen: React.FC<MonthlyReportScreenProps> = ({ db }) 
                   <td className="p-2 border-l border-slate-300 font-semibold">بطاقات صحية (ذكور)</td>
                   <td className="p-2 border-l border-slate-300 text-center font-bold">{report.vitalStats.healthCardsMaleTotal}</td>
                   <td className="p-2 text-center text-amber-800 font-bold">
-                    {(report.vitalStats.healthCardsMaleTotal * (db.officeSettings?.healthCardMaleFee || 50)).toLocaleString()} ج.م
+                    {report.vitalStats.healthCardsMaleRevenue.toLocaleString()} ج.م
                   </td>
                 </tr>
                 <tr>
                   <td className="p-2 border-l border-slate-300 font-semibold">بطاقات صحية (إناث)</td>
                   <td className="p-2 border-l border-slate-300 text-center font-bold">{report.vitalStats.healthCardsFemaleTotal}</td>
                   <td className="p-2 text-center text-amber-800 font-bold">
-                    {(report.vitalStats.healthCardsFemaleTotal * (db.officeSettings?.healthCardFemaleFee || 50)).toLocaleString()} ج.م
+                    {report.vitalStats.healthCardsFemaleRevenue.toLocaleString()} ج.م
                   </td>
                 </tr>
                 <tr className="bg-slate-50">

@@ -29,12 +29,14 @@ export interface VitalStatisticsSummary {
   birthCertificatesTotal: number;
   birthCertificatesMale: number;
   birthCertificatesFemale: number;
+  birthCertificatesUnspecified?: number;
   birthNotificationsTotal: number;
 
   // Deaths
   deathCertificatesTotal: number;
   deathCertificatesMale: number;
   deathCertificatesFemale: number;
+  deathCertificatesUnspecified?: number;
   deathNotificationsTotal: number;
 
   // Health Cards - STRICTLY SEPARATE FROM BIRTHS (Rule 25)
@@ -44,6 +46,8 @@ export interface VitalStatisticsSummary {
 
   // Revenue / Collected Fees (Rule 28)
   healthCardRevenue: number;
+  healthCardsMaleRevenue: number;
+  healthCardsFemaleRevenue: number;
   certificatesRevenue: number;
   totalCollectedRevenue: number;
 
@@ -125,16 +129,20 @@ export function generateOfficialMonthlyReport(
   // 2. Vital Statistics - STRICT SEPARATION (Rule 25, 26, 27, 28)
   let birthCertificatesMale = 0;
   let birthCertificatesFemale = 0;
+  let birthCertificatesUnspecified = 0;
   let birthNotificationsTotal = 0;
 
   let deathCertificatesMale = 0;
   let deathCertificatesFemale = 0;
+  let deathCertificatesUnspecified = 0;
   let deathNotificationsTotal = 0;
 
   let healthCardsMaleTotal = 0;
   let healthCardsFemaleTotal = 0;
 
   let healthCardRevenue = 0;
+  let healthCardsMaleRevenue = 0;
+  let healthCardsFemaleRevenue = 0;
   let certificatesRevenue = 0;
 
   for (const d of monthDispenses) {
@@ -143,27 +151,34 @@ export function generateOfficialMonthlyReport(
     // Strict Classification: Check transactionType and category
     if (d.transactionType === 'health_card_male' || d.category === 'health_cards_male') {
       healthCardsMaleTotal += d.quantity;
-      healthCardRevenue += amt;
+      const fee = amt > 0 ? amt : d.quantity * (db.officeSettings?.healthCardMaleFee || 50);
+      healthCardsMaleRevenue += fee;
+      healthCardRevenue += fee;
     } else if (d.transactionType === 'health_card_female' || d.category === 'health_cards_female') {
       healthCardsFemaleTotal += d.quantity;
-      healthCardRevenue += amt;
+      const fee = amt > 0 ? amt : d.quantity * (db.officeSettings?.healthCardFemaleFee || 50);
+      healthCardsFemaleRevenue += fee;
+      healthCardRevenue += fee;
     } else if (d.transactionType === 'birth' || d.category === 'birth_certificates') {
-      // Birth Certificates
+      // Birth Certificates (Rule 18: Exact gender, never force default)
       if (d.gender === 'أنثى') {
         birthCertificatesFemale += d.quantity;
-      } else {
-        // Default to Male for standard birth certs if specified or default
+      } else if (d.gender === 'ذكر') {
         birthCertificatesMale += d.quantity;
+      } else {
+        birthCertificatesUnspecified += d.quantity;
       }
       certificatesRevenue += amt;
     } else if (d.transactionType === 'birth_notification' || d.category === 'birth_notifications') {
       birthNotificationsTotal += d.quantity;
     } else if (d.transactionType === 'death' || d.category === 'death_certificates') {
-      // Death Certificates (Rule 26: Male = ذكر, Female = أنثى)
+      // Death Certificates (Rule 18: Exact gender, never force default)
       if (d.gender === 'أنثى') {
         deathCertificatesFemale += d.quantity;
-      } else {
+      } else if (d.gender === 'ذكر') {
         deathCertificatesMale += d.quantity;
+      } else {
+        deathCertificatesUnspecified += d.quantity;
       }
       certificatesRevenue += amt;
     } else if (d.transactionType === 'death_notification' || d.category === 'death_notifications') {
@@ -185,14 +200,16 @@ export function generateOfficialMonthlyReport(
   }
 
   const vitalStats: VitalStatisticsSummary = {
-    birthCertificatesTotal: birthCertificatesMale + birthCertificatesFemale,
+    birthCertificatesTotal: birthCertificatesMale + birthCertificatesFemale + birthCertificatesUnspecified,
     birthCertificatesMale,
     birthCertificatesFemale,
+    birthCertificatesUnspecified,
     birthNotificationsTotal,
 
-    deathCertificatesTotal: deathCertificatesMale + deathCertificatesFemale,
+    deathCertificatesTotal: deathCertificatesMale + deathCertificatesFemale + deathCertificatesUnspecified,
     deathCertificatesMale,
     deathCertificatesFemale,
+    deathCertificatesUnspecified,
     deathNotificationsTotal,
 
     // Health cards are strictly NOT added to birth certificates
@@ -201,6 +218,8 @@ export function generateOfficialMonthlyReport(
     healthCardsTotal: healthCardsMaleTotal + healthCardsFemaleTotal,
 
     healthCardRevenue,
+    healthCardsMaleRevenue,
+    healthCardsFemaleRevenue,
     certificatesRevenue,
     totalCollectedRevenue: healthCardRevenue + certificatesRevenue,
 

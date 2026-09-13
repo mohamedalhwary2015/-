@@ -268,7 +268,9 @@ app.post('/api/sync/transactions', (req, res) => {
               details: `تعديل الرصيد الفعلي من ${oldStock} إلى ${newActual} (الفارق: ${diff > 0 ? `+${diff}` : diff}) - السبب: ${payload.reason} - ${payload.notes || ''}`,
               performedBy: payload.performedBy || 'غير محدد',
               previousValue: oldStock,
-              newValue: newActual
+              newValue: newActual,
+              transactionId,
+              operationType: 'MANUAL_STOCK_ADJUSTMENT'
             });
             modified = true;
           }
@@ -299,7 +301,9 @@ app.post('/api/sync/transactions', (req, res) => {
             category: cat,
             details: `اعتماد رصيد أول المدة للصنف بقيمة ${qty} بواسطة ${payload.inventoryKeeper || 'غير محدد'}`,
             performedBy: payload.inventoryKeeper || 'غير محدد',
-            newValue: qty
+            newValue: qty,
+            transactionId,
+            operationType: 'OPENING_BALANCE_SET'
           });
           modified = true;
           break;

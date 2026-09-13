@@ -215,6 +215,8 @@ export interface AuditLogEntry {
   performedBy: string;
   previousValue?: any;
   newValue?: any;
+  transactionId?: string;
+  operationType?: OperationType;
 }
 
 export interface DatabaseSchema {

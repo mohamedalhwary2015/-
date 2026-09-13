@@ -416,19 +416,51 @@ export function mergeServerDataSafely(localDb: DatabaseSchema, serverData: Parti
     }
   }
 
-  // 6. Audit logs merge (for manual adjustments visibility across terminals)
+  // 6. Audit logs merge (Rule 4 & Rule 15: strictly controlled, no arbitrary stock changes from regular logs)
   if (serverData.auditLogs && Array.isArray(serverData.auditLogs)) {
     const localAuditIds = new Set((localDb.auditLogs || []).map(a => a.id));
+    const pendingQueue = getPendingQueue();
+    const pendingAdjustments = pendingQueue.filter(q => q.operationType === 'MANUAL_STOCK_ADJUSTMENT');
+
     for (const sa of serverData.auditLogs) {
       if (!localAuditIds.has(sa.id)) {
         localDb.auditLogs.unshift(sa);
         localAuditIds.add(sa.id);
-        // If it's a manual adjustment from another terminal with newer timestamp, apply stock update
-        if (sa.action === 'تسوية رصيد جرد يدوي صريح' && sa.category && sa.newValue !== undefined) {
+
+        // Rule 4: ONLY audit logs that originate from a verified MANUAL_STOCK_ADJUSTMENT with transactionId can adjust stock
+        // A normal audit log (e.g. settings, reports, general audit) MUST NEVER touch currentStock!
+        const isVerifiedManualAdjustment =
+          (sa.operationType === 'MANUAL_STOCK_ADJUSTMENT' || sa.action === 'تسوية رصيد جرد يدوي صريح') &&
+          Boolean(sa.transactionId) &&
+          Boolean(sa.category) &&
+          typeof sa.newValue === 'number';
+
+        if (isVerifiedManualAdjustment && sa.category) {
           const stock = localDb.stocks[sa.category];
-          if (stock && (!stock.lastUpdated || sa.timestamp > stock.lastUpdated)) {
-            stock.currentStock = sa.newValue;
-            stock.lastUpdated = sa.timestamp;
+          // Rule 15: Conflict Resolution - Check if local terminal has a pending adjustment for the same category
+          const localConflictingPending = pendingAdjustments.find(p => p.payload?.category === sa.category);
+
+          if (localConflictingPending && localConflictingPending.payload?.newActualStock !== sa.newValue) {
+            // Conflict detected between two offline devices: Record SYNC_CONFLICT and protect local stock!
+            const conflictEntry = {
+              id: `conflict-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              timestamp: new Date().toISOString(),
+              action: 'SYNC_CONFLICT',
+              category: sa.category,
+              details: `تعارض في تسوية الرصيد للصنف ${sa.category}: القيمة محلياً ${localConflictingPending.payload?.newActualStock} بينما الخادم ${sa.newValue}`,
+              performedBy: 'نظام فض النزاعات والمزامنة',
+              previousValue: localConflictingPending.payload?.newActualStock,
+              newValue: sa.newValue
+            };
+            localDb.auditLogs.unshift(conflictEntry);
+            localAuditIds.add(conflictEntry.id);
+          } else if (stock) {
+            const serverTime = new Date(sa.timestamp).getTime();
+            const localTime = stock.lastUpdated ? new Date(stock.lastUpdated).getTime() : 0;
+            if (serverTime >= localTime) {
+              stock.currentStock = sa.newValue;
+              stock.lastUpdated = sa.timestamp;
+            }
           }
         }
         changed = true;

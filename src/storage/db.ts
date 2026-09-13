@@ -658,6 +658,9 @@ export function manualAdjustStock(
   stock.currentStock = newActualStock;
   stock.lastUpdated = now;
 
+  const transactionId = generateStableId('tx-adj');
+  const adjId = generateStableId('adj');
+
   db.auditLogs.unshift({
     id: generateStableId('audit'),
     timestamp: now,
@@ -666,12 +669,12 @@ export function manualAdjustStock(
     details: `تعديل الرصيد الفعلي من ${oldStock} إلى ${newActualStock} (الفارق: ${difference > 0 ? `+${difference}` : difference}) - السبب: ${reason} - ${notes}`,
     performedBy: performedBy || db.officeSettings.currentEmployee || 'غير محدد',
     previousValue: oldStock,
-    newValue: newActualStock
+    newValue: newActualStock,
+    transactionId,
+    operationType: 'MANUAL_STOCK_ADJUSTMENT'
   });
 
   const saved = saveDatabase(db);
-  const transactionId = generateStableId('tx-adj');
-  const adjId = generateStableId('adj');
   enqueueTransaction(
     'MANUAL_STOCK_ADJUSTMENT',
     adjId,
@@ -728,6 +731,9 @@ export function setOpeningBalance(
     stock.lastUpdated = now;
   }
 
+  const transactionId = generateStableId('tx-opb');
+  const opbId = generateStableId('opb');
+
   db.auditLogs.unshift({
     id: generateStableId('audit'),
     timestamp: now,
@@ -735,12 +741,12 @@ export function setOpeningBalance(
     category,
     details: `اعتماد رصيد أول المدة للصنف بقيمة ${quantity} بواسطة ${inventoryKeeper}`,
     performedBy: inventoryKeeper || db.officeSettings.currentEmployee || 'غير محدد',
-    newValue: quantity
+    newValue: quantity,
+    transactionId,
+    operationType: 'OPENING_BALANCE_SET'
   });
 
   const saved = saveDatabase(db);
-  const transactionId = generateStableId('tx-opb');
-  const opbId = generateStableId('opb');
   enqueueTransaction(
     'OPENING_BALANCE_SET',
     opbId,
