@@ -25,9 +25,12 @@ import { calculateTheoreticalStockForCategory } from '../services/stockService';
 
 interface StockManagementProps {
   db: DatabaseSchema;
+  initialTab?: 'stocks' | 'supplies';
 }
 
-export const StockManagement: React.FC<StockManagementProps> = ({ db }) => {
+export const StockManagement: React.FC<StockManagementProps> = ({ db, initialTab = 'stocks' }) => {
+  const [activeSubTab, setActiveSubTab] = useState<'stocks' | 'supplies'>(initialTab);
+
   // Supply Form State
   const [showSupplyModal, setShowSupplyModal] = useState(false);
   const [editingSupply, setEditingSupply] = useState<SupplyTransaction | null>(null);
@@ -149,8 +152,44 @@ export const StockManagement: React.FC<StockManagementProps> = ({ db }) => {
 
   return (
     <div className="space-y-6" id="stocks-view">
+      {/* Sub-tabs for Stocks & Supplies */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-2 bg-white p-1.5 rounded-2xl border border-slate-200 shadow-xs">
+          <button
+            onClick={() => setActiveSubTab('stocks')}
+            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all ${
+              activeSubTab === 'stocks'
+                ? 'bg-teal-600 text-white shadow-xs'
+                : 'text-slate-600 hover:bg-slate-100'
+            }`}
+          >
+            الأرصدة الفعلية والمطابقة الرقابية
+          </button>
+          <button
+            onClick={() => setActiveSubTab('supplies')}
+            className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all ${
+              activeSubTab === 'supplies'
+                ? 'bg-teal-600 text-white shadow-xs'
+                : 'text-slate-600 hover:bg-slate-100'
+            }`}
+          >
+            أذون التوريد الواردة ({filteredSupplies.length})
+          </button>
+        </div>
+
+        <button
+          id="btn-add-supply"
+          onClick={openAddSupplyModal}
+          className="flex items-center gap-1.5 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-xs transition-all"
+        >
+          <Plus className="w-4 h-4" />
+          <span>تسجيل إذن توريد جديد</span>
+        </button>
+      </div>
+
       {/* Overview Table of Stocks */}
-      <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs">
+      {(activeSubTab === 'stocks' || activeSubTab === 'supplies') && (
+      <div className={`bg-white rounded-2xl p-6 border border-slate-200 shadow-xs ${activeSubTab !== 'stocks' ? 'hidden' : ''}`}>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
           <div>
             <h2 className="text-lg font-bold text-slate-900">
@@ -160,14 +199,6 @@ export const StockManagement: React.FC<StockManagementProps> = ({ db }) => {
               الرصيد الفعلي الحالي محمي تشغيلياً، وتظهر الحسابات النظرية للتحقق الرقابي فقط
             </p>
           </div>
-          <button
-            id="btn-add-supply"
-            onClick={openAddSupplyModal}
-            className="flex items-center gap-1.5 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-xs transition-all self-start sm:self-auto"
-          >
-            <Plus className="w-4 h-4" />
-            <span>تسجيل إذن توريد جديد</span>
-          </button>
         </div>
 
         <div className="overflow-x-auto">
@@ -252,9 +283,11 @@ export const StockManagement: React.FC<StockManagementProps> = ({ db }) => {
           </table>
         </div>
       </div>
+      )}
 
       {/* Supplies Transactions Ledger */}
-      <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs">
+      {(activeSubTab === 'stocks' || activeSubTab === 'supplies') && (
+      <div className={`bg-white rounded-2xl p-6 border border-slate-200 shadow-xs ${activeSubTab !== 'supplies' ? 'hidden' : ''}`}>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
           <div>
             <h3 className="text-base font-bold text-slate-900">
@@ -331,6 +364,7 @@ export const StockManagement: React.FC<StockManagementProps> = ({ db }) => {
           </div>
         )}
       </div>
+      )}
 
       {/* Add / Edit Supply Modal */}
       {showSupplyModal && (

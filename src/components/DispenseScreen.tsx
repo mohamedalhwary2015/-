@@ -26,22 +26,36 @@ import { validateDispenseAvailability } from '../services/stockService';
 interface DispenseScreenProps {
   db: DatabaseSchema;
   onPrintReceipt?: (record: DispenseRecord) => void;
+  filterMode?: 'all' | 'health_cards' | 'documents';
 }
 
-export const DispenseScreen: React.FC<DispenseScreenProps> = ({ db, onPrintReceipt }) => {
+export const DispenseScreen: React.FC<DispenseScreenProps> = ({
+  db,
+  onPrintReceipt,
+  filterMode = 'all'
+}) => {
   const [showModal, setShowModal] = useState(false);
   const [editingRecord, setEditingRecord] = useState<DispenseRecord | null>(null);
+  const [subFilter, setSubFilter] = useState<'all' | 'male' | 'female'>('all');
 
   // Form Fields
   const [dispenseDate, setDispenseDate] = useState(new Date().toISOString().split('T')[0]);
   const [citizenName, setCitizenName] = useState('');
   const [nationalId, setNationalId] = useState('');
   const [childOrDeceasedName, setChildOrDeceasedName] = useState('');
-  const [transactionType, setTransactionType] = useState<TransactionType>('birth');
-  const [gender, setGender] = useState<'ذكر' | 'أنثى' | 'غير محدد'>('ذكر');
-  const [category, setCategory] = useState<StockCategory>('birth_certificates');
+  const [transactionType, setTransactionType] = useState<TransactionType>(
+    filterMode === 'health_cards' ? 'health_card_male' : 'birth'
+  );
+  const [gender, setGender] = useState<'ذكر' | 'أنثى' | 'غير محدد'>(
+    filterMode === 'health_cards' ? 'ذكر' : 'ذكر'
+  );
+  const [category, setCategory] = useState<StockCategory>(
+    filterMode === 'health_cards' ? 'health_cards_male' : 'birth_certificates'
+  );
   const [quantity, setQuantity] = useState<number>(1);
-  const [collectedAmount, setCollectedAmount] = useState<number>(0);
+  const [collectedAmount, setCollectedAmount] = useState<number>(
+    filterMode === 'health_cards' ? (db.officeSettings?.healthCardMaleFee ?? 50) : (db.officeSettings?.birthCertFee ?? 0)
+  );
   const [receiptNumber, setReceiptNumber] = useState('');
   const [serialNumber, setSerialNumber] = useState('');
   const [dispensedBy, setDispensedBy] = useState(db.officeSettings?.currentEmployee || 'غير محدد');
@@ -81,11 +95,18 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({ db, onPrintRecei
     setCitizenName('');
     setNationalId('');
     setChildOrDeceasedName('');
-    setTransactionType('birth');
-    setCategory('birth_certificates');
-    setGender('ذكر');
+    if (filterMode === 'health_cards') {
+      setTransactionType('health_card_male');
+      setCategory('health_cards_male');
+      setGender('ذكر');
+      setCollectedAmount(db.officeSettings?.healthCardMaleFee ?? 50);
+    } else {
+      setTransactionType('birth');
+      setCategory('birth_certificates');
+      setGender('ذكر');
+      setCollectedAmount(db.officeSettings?.birthCertFee ?? 0);
+    }
     setQuantity(1);
-    setCollectedAmount(db.officeSettings?.birthCertFee ?? 0);
     setReceiptNumber('');
     setSerialNumber('');
     setDispensedBy(db.officeSettings?.currentEmployee || 'غير محدد');
@@ -171,6 +192,16 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({ db, onPrintRecei
 
   const filteredDispenses = (db.dispenses || []).filter(d => {
     if (d.isDeleted) return false;
+
+    // Filter mode checks
+    if (filterMode === 'health_cards') {
+      if (d.category !== 'health_cards_male' && d.category !== 'health_cards_female') return false;
+      if (subFilter === 'male' && d.category !== 'health_cards_male') return false;
+      if (subFilter === 'female' && d.category !== 'health_cards_female') return false;
+    } else if (filterMode === 'documents') {
+      if (d.category === 'health_cards_male' || d.category === 'health_cards_female') return false;
+    }
+
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -179,9 +210,27 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({ db, onPrintRecei
       (d.childOrDeceasedName && d.childOrDeceasedName.toLowerCase().includes(q)) ||
       (d.serialNumber && d.serialNumber.toLowerCase().includes(q)) ||
       (d.receiptNumber && d.receiptNumber.toLowerCase().includes(q)) ||
-      CATEGORY_LABELS[d.category].toLowerCase().includes(q)
+      (CATEGORY_LABELS[d.category] && CATEGORY_LABELS[d.category].toLowerCase().includes(q))
     );
   });
+
+  const screenTitle = filterMode === 'health_cards'
+    ? 'صرف وإصدار البطاقات الصحية (ذكور / إناث)'
+    : filterMode === 'documents'
+    ? 'صرف الشهادات والمستندات الرسمية (مواليد / وفيات)'
+    : 'صرف المستندات والوثائق للمواطنين';
+
+  const screenSubtitle = filterMode === 'health_cards'
+    ? 'تسجيل صرف البطاقات الصحية للمواليد وبدل الفاقد مع تسجيل رسوم التحصيل المقررة وقسائم السداد'
+    : filterMode === 'documents'
+    ? 'تسجيل صرف شهادات الميلاد والوفاة وبلاغات القيد للمواطنين وأولياء الأمور'
+    : 'تسجيل صرف شهادات الميلاد والوفاة والبطاقات الصحية مع قيد المبالغ المحصلة';
+
+  const addButtonText = filterMode === 'health_cards'
+    ? 'صرف بطاقة صحية جديدة'
+    : filterMode === 'documents'
+    ? 'صرف شهادة / مستند جديد'
+    : 'صرف مستند جديد';
 
   return (
     <div className="space-y-6" id="dispense-view">
@@ -189,10 +238,10 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({ db, onPrintRecei
       <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-lg font-bold text-slate-900">
-            صرف المستندات والوثائق للمواطنين
+            {screenTitle}
           </h2>
           <p className="text-xs text-slate-500">
-            تسجيل صرف شهادات الميلاد والوفاة والبطاقات الصحية مع قيد المبالغ المحصلة
+            {screenSubtitle}
           </p>
         </div>
 
@@ -202,9 +251,44 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({ db, onPrintRecei
           className="flex items-center gap-1.5 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs sm:text-sm font-semibold shadow-xs transition-all self-start sm:self-auto"
         >
           <Plus className="w-4 h-4" />
-          <span>صرف مستند جديد</span>
+          <span>{addButtonText}</span>
         </button>
       </div>
+
+      {filterMode === 'health_cards' && (
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setSubFilter('all')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+              subFilter === 'all'
+                ? 'bg-teal-600 text-white shadow-xs'
+                : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+            }`}
+          >
+            كافة البطاقات الصحية
+          </button>
+          <button
+            onClick={() => setSubFilter('male')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+              subFilter === 'male'
+                ? 'bg-blue-600 text-white shadow-xs'
+                : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+            }`}
+          >
+            بطاقات ذكور فقط
+          </button>
+          <button
+            onClick={() => setSubFilter('female')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+              subFilter === 'female'
+                ? 'bg-pink-600 text-white shadow-xs'
+                : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
+            }`}
+          >
+            بطاقات إناث فقط
+          </button>
+        </div>
+      )}
 
       {/* List of Dispensed Documents */}
       <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs">

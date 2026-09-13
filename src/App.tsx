@@ -16,6 +16,10 @@ import { MonthlyReportScreen } from './components/MonthlyReportScreen';
 import { ItemDispenseReportsScreen } from './components/ItemDispenseReportsScreen';
 import { BackupRestoreScreen } from './components/BackupRestoreScreen';
 import { DiagnosticsScreen } from './components/DiagnosticsScreen';
+import { StockLedgerScreen } from './components/StockLedgerScreen';
+import { RevenueReportScreen } from './components/RevenueReportScreen';
+import { ReportsCenterScreen } from './components/ReportsCenterScreen';
+import { OfficeSettingsScreen } from './components/OfficeSettingsScreen';
 import { PrintReceiptModal } from './components/PrintReceiptModal';
 import { AutoSyncModal } from './components/AutoSyncModal';
 import { PWAInstallButton } from './components/PWAInstallButton';
@@ -25,6 +29,7 @@ export function App() {
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
   const [selectedReceiptForPrint, setSelectedReceiptForPrint] = useState<DispenseRecord | null>(null);
   const [showSyncModal, setShowSyncModal] = useState<boolean>(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
 
   const isOnline = useOnlineStatus();
   const { isSyncing, syncStatus, pendingCount, lastSyncTime, lastError, triggerSync } = useAutoSync(db);
@@ -49,7 +54,7 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-['Cairo',sans-serif]">
-      {/* Top Header */}
+      {/* Top ERP Header */}
       <Header
         db={db}
         isOnline={isOnline}
@@ -60,30 +65,60 @@ export function App() {
         onTriggerSync={() => setShowSyncModal(true)}
         onOpenDiagnostics={() => setActiveTab('diagnostics')}
         integrityIssuesCount={integrityCheck.totalIssues}
+        onToggleMobileMenu={() => setIsMobileMenuOpen(prev => !prev)}
+        onNavigate={(tab) => setActiveTab(tab)}
       />
 
-      {/* Main Workspace Layout */}
-      <div className="flex-1 flex flex-col lg:flex-row max-w-7xl w-full mx-auto">
+      {/* Main ERP Layout: Persistent Sidebar + Working Area */}
+      <div className="flex-1 flex w-full">
         {/* Navigation Sidebar */}
         <Sidebar
           activeTab={activeTab}
           onTabChange={setActiveTab}
           integrityIssuesCount={integrityCheck.totalIssues}
+          pendingSyncCount={pendingCount}
+          isMobileOpen={isMobileMenuOpen}
+          onCloseMobile={() => setIsMobileMenuOpen(false)}
         />
 
-        {/* Content Area */}
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto">
+        {/* Dynamic Content Main Area */}
+        <main className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8 overflow-y-auto max-w-7xl mx-auto w-full">
           {activeTab === 'dashboard' && (
             <Dashboard db={db} onNavigate={(tab) => setActiveTab(tab)} />
           )}
 
           {activeTab === 'stocks' && (
-            <StockManagement db={db} />
+            <StockManagement db={db} initialTab="stocks" />
+          )}
+
+          {activeTab === 'supplies' && (
+            <StockManagement db={db} initialTab="supplies" />
+          )}
+
+          {activeTab === 'stock_ledger' && (
+            <StockLedgerScreen db={db} />
+          )}
+
+          {activeTab === 'health_cards' && (
+            <DispenseScreen
+              db={db}
+              filterMode="health_cards"
+              onPrintReceipt={(rec) => setSelectedReceiptForPrint(rec)}
+            />
+          )}
+
+          {activeTab === 'documents' && (
+            <DispenseScreen
+              db={db}
+              filterMode="documents"
+              onPrintReceipt={(rec) => setSelectedReceiptForPrint(rec)}
+            />
           )}
 
           {activeTab === 'dispense' && (
             <DispenseScreen
               db={db}
+              filterMode="all"
               onPrintReceipt={(rec) => setSelectedReceiptForPrint(rec)}
             />
           )}
@@ -96,8 +131,19 @@ export function App() {
             <OpeningBalancesScreen db={db} />
           )}
 
+          {activeTab === 'reports_center' && (
+            <ReportsCenterScreen
+              db={db}
+              onNavigate={(tab) => setActiveTab(tab)}
+            />
+          )}
+
           {activeTab === 'monthly_reports' && (
             <MonthlyReportScreen db={db} />
+          )}
+
+          {activeTab === 'revenue_reports' && (
+            <RevenueReportScreen db={db} />
           )}
 
           {activeTab === 'item_dispense_reports' && (
@@ -116,6 +162,10 @@ export function App() {
 
           {activeTab === 'diagnostics' && (
             <DiagnosticsScreen db={db} onRefreshDb={refreshDb} />
+          )}
+
+          {activeTab === 'settings' && (
+            <OfficeSettingsScreen db={db} onSettingsUpdated={refreshDb} />
           )}
         </main>
       </div>
