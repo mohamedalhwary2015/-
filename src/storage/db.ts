@@ -662,22 +662,27 @@ export function manualAdjustStock(
   const adjId = generateStableId('adj');
   const operationKey = `MANUAL_STOCK_ADJUSTMENT:${adjId}:1`;
   const deviceId = getDeviceId();
+  const creator = performedBy || db.officeSettings.currentEmployee || 'غير محدد';
 
   db.auditLogs.unshift({
     id: generateStableId('audit'),
     timestamp: now,
     action: 'تسوية رصيد جرد يدوي صريح',
     category,
+    itemId: category,
     details: `تعديل الرصيد الفعلي من ${oldStock} إلى ${newActualStock} (الفارق: ${difference > 0 ? `+${difference}` : difference}) - السبب: ${reason} - ${notes}`,
-    performedBy: performedBy || db.officeSettings.currentEmployee || 'غير محدد',
+    performedBy: creator,
+    createdBy: creator,
     previousValue: oldStock,
     newValue: newActualStock,
     oldStock,
+    newStock: newActualStock,
     newActualStock,
     difference,
     reason,
     notes,
     transactionId,
+    operationId: adjId,
     operationKey,
     deviceId,
     operationType: 'MANUAL_STOCK_ADJUSTMENT'
@@ -690,14 +695,18 @@ export function manualAdjustStock(
     1,
     {
       id: adjId,
+      operationId: adjId,
+      itemId: category,
       category,
       previousStock: oldStock,
       oldStock,
+      newStock: newActualStock,
       newActualStock,
       difference,
       reason,
       notes,
-      performedBy: performedBy || db.officeSettings?.currentEmployee || 'غير محدد',
+      performedBy: creator,
+      createdBy: creator,
       timestamp: now,
       transactionId,
       operationKey,
@@ -745,16 +754,24 @@ export function setOpeningBalance(
 
   const transactionId = generateStableId('tx-opb');
   const opbId = generateStableId('opb');
+  const operationKey = `OPENING_BALANCE_SET:${opbId}:1`;
+  const deviceId = getDeviceId();
+  const creator = inventoryKeeper || db.officeSettings.currentEmployee || 'غير محدد';
 
   db.auditLogs.unshift({
     id: generateStableId('audit'),
     timestamp: now,
     action: 'تحديد رصيد أول المدة',
     category,
-    details: `اعتماد رصيد أول المدة للصنف بقيمة ${quantity} بواسطة ${inventoryKeeper}`,
-    performedBy: inventoryKeeper || db.officeSettings.currentEmployee || 'غير محدد',
+    itemId: category,
+    details: `اعتماد رصيد أول المدة للصنف بقيمة ${quantity} بواسطة ${creator}`,
+    performedBy: creator,
+    createdBy: creator,
     newValue: quantity,
     transactionId,
+    operationId: opbId,
+    operationKey,
+    deviceId,
     operationType: 'OPENING_BALANCE_SET'
   });
 
@@ -765,12 +782,18 @@ export function setOpeningBalance(
     1,
     {
       id: opbId,
+      operationId: opbId,
+      itemId: category,
       category,
       quantity,
       inventoryDate: now.split('T')[0],
-      inventoryKeeper: inventoryKeeper || db.officeSettings?.currentEmployee || 'غير محدد',
+      inventoryKeeper: creator,
+      createdBy: creator,
       notes,
-      transactionId
+      timestamp: now,
+      transactionId,
+      operationKey,
+      deviceId
     },
     transactionId
   );

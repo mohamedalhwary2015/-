@@ -40,6 +40,18 @@ export interface DiagnosticRecordItem {
   citizenOrDocument?: string;
 }
 
+export interface BalanceMismatchItem {
+  code: 'BALANCE_MISMATCH';
+  category: StockCategory;
+  categoryLabel: string;
+  offlineCurrentStock: number;
+  onlineCurrentStock?: number;
+  calculatedStock: number;
+  difference: number;
+  suspectedMovements?: { id: string; type: string; date?: string; quantity?: number; details?: string }[];
+  description: string;
+}
+
 export interface ProductionRepairDiagnosticReport {
   timestamp: string;
   isDiagnosticOnly: true;
@@ -52,6 +64,7 @@ export interface ProductionRepairDiagnosticReport {
   demoSeedCandidates: SuspectedRecord[];
   invalidTransactions: { id: string; type: string; reason: string }[];
   metadataDiscrepancies: { field: string; localValue: any; serverValue: any }[];
+  balanceMismatches: BalanceMismatchItem[];
   stockDiscrepancies: {
     category: StockCategory;
     categoryLabel: string;
@@ -67,6 +80,7 @@ export interface ProductionRepairDiagnosticReport {
     totalTombstones: number;
     totalDemoCandidates: number;
     totalInvalidTransactions: number;
+    totalBalanceMismatches: number;
     hasStockDiscrepancies: boolean;
     guarantee: string;
   };
@@ -308,7 +322,7 @@ export function executeProductionRepair(
     }
   }
 
-  // 8. Stock discrepancies (Diagnostic only - strictly does not change currentStock)
+  // 8. Balance Mismatches & Stock discrepancies (Diagnostic only - strictly does not change currentStock)
   const fullCheck = runFullIntegrityCheck(localDb);
   const stockDiscrepancies = fullCheck.categoryAudits
     .filter(ca => !ca.isBalanced)
@@ -319,6 +333,43 @@ export function executeProductionRepair(
       theoreticalStock: ca.theoreticalStock,
       difference: ca.difference
     }));
+
+  const balanceMismatches: BalanceMismatchItem[] = [];
+  for (const cat of STOCK_CATEGORIES) {
+    const localStock = localDb.stocks[cat];
+    const offlineCurrentStock = localStock ? localStock.currentStock : 0;
+    const onlineCurrentStock = serverDb?.stocks?.[cat]?.currentStock;
+    const calculatedStock = localStock
+      ? (localStock.openingStock || 0) + (localStock.totalReceived || 0) - (localStock.totalDispensed || 0) - (localStock.damagedOrCancelled || 0)
+      : 0;
+    const diff = offlineCurrentStock - calculatedStock;
+    const hasServerDiff = onlineCurrentStock !== undefined && offlineCurrentStock !== onlineCurrentStock;
+
+    if (diff !== 0 || hasServerDiff) {
+      const suspectedMovements = [
+        ...(localDb.supplies || [])
+          .filter(s => s.category === cat && !s.isDeleted)
+          .map(s => ({ id: s.id, type: 'supply', date: s.date, quantity: s.quantity, details: s.documentNumber })),
+        ...(localDb.dispenses || [])
+          .filter(d => d.category === cat && !d.isDeleted)
+          .map(d => ({ id: d.id, type: 'dispense', date: d.date, quantity: d.quantity, details: d.citizenName }))
+      ];
+
+      balanceMismatches.push({
+        code: 'BALANCE_MISMATCH',
+        category: cat,
+        categoryLabel: CATEGORY_LABELS[cat] || cat,
+        offlineCurrentStock,
+        onlineCurrentStock,
+        calculatedStock,
+        difference: diff,
+        suspectedMovements,
+        description: hasServerDiff
+          ? `تعارض بين رصيد الأوفلاين (${offlineCurrentStock}) ورصيد الأونلاين (${onlineCurrentStock}) للصنف: ${CATEGORY_LABELS[cat] || cat}`
+          : `اختلاف بين الرصيد الفعلي المسجل (${offlineCurrentStock}) والرصيد المحسوب دفترياً (${calculatedStock}) بفارق (${diff > 0 ? `+${diff}` : diff})`
+      });
+    }
+  }
 
   return {
     timestamp: now,
@@ -332,6 +383,7 @@ export function executeProductionRepair(
     demoSeedCandidates,
     invalidTransactions,
     metadataDiscrepancies,
+    balanceMismatches,
     stockDiscrepancies,
     summary: {
       totalOfflineOnly: offlineOnlyRecords.length,
@@ -341,7 +393,8 @@ export function executeProductionRepair(
       totalTombstones: tombstones.length,
       totalDemoCandidates: demoSeedCandidates.length,
       totalInvalidTransactions: invalidTransactions.length,
-      hasStockDiscrepancies: stockDiscrepancies.length > 0,
+      totalBalanceMismatches: balanceMismatches.length,
+      hasStockDiscrepancies: stockDiscrepancies.length > 0 || balanceMismatches.length > 0,
       guarantee: 'التقرير تشخيصي رقابي بالكامل ولا يغير أي رصيد فعلي أو حركة حقيقية تلقائياً'
     }
   };

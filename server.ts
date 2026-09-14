@@ -155,6 +155,49 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+app.get('/api/integrity-check', (req, res) => {
+  const db = loadServerDb();
+  const categoryChecks = STOCK_CATEGORIES.map(cat => {
+    const s = db.stocks[cat] || {
+      currentStock: 0,
+      openingStock: 0,
+      totalReceived: 0,
+      totalDispensed: 0,
+      damagedOrCancelled: 0
+    };
+    const calculated = (s.openingStock || 0) + (s.totalReceived || 0) - (s.totalDispensed || 0) - (s.damagedOrCancelled || 0);
+    const diff = s.currentStock - calculated;
+    return {
+      category: cat,
+      currentStock: s.currentStock,
+      openingStock: s.openingStock,
+      totalReceived: s.totalReceived,
+      totalDispensed: s.totalDispensed,
+      damagedOrCancelled: s.damagedOrCancelled,
+      calculatedStock: calculated,
+      difference: diff,
+      isBalanced: diff === 0
+    };
+  });
+
+  const hasMismatch = categoryChecks.some(c => !c.isBalanced);
+
+  res.json({
+    status: 'ok',
+    office: 'مكتب صحة سفلاق',
+    timestamp: new Date().toISOString(),
+    resetId: db.resetBoundary?.resetId || 'NONE',
+    isBalanced: !hasMismatch,
+    categoryChecks,
+    tombstonesCount: (db.tombstones || []).length,
+    suppliesCount: (db.supplies || []).filter(s => !s.isDeleted).length,
+    dispensesCount: (db.dispenses || []).filter(d => !d.isDeleted).length,
+    auditLogsCount: (db.auditLogs || []).length,
+    demoCandidatesCount: 0,
+    guarantee: 'currentStock is strictly protected and authoritative; no automatic stock recalculation or overwrite'
+  });
+});
+
 app.get('/api/database', (req, res) => {
   const db = loadServerDb();
   res.json(db);
@@ -175,9 +218,10 @@ app.post('/api/sync/transactions', (req, res) => {
       const clientResetId = resetBoundary?.resetId;
       if (!clientResetId || clientResetId !== serverDb.resetBoundary.resetId) {
         return res.status(409).json({
-          code: 'RESET_BOUNDARY_VIOLATION',
-          error: 'RESET_BOUNDARY_VIOLATION',
-          message: 'تم تصفير النظام مركزياً. الحركات المتبقية من الجلسة السابقة مرفوضة.',
+          code: 'STALE_RESET_ID',
+          error: 'STALE_RESET_ID',
+          legacyCode: 'RESET_BOUNDARY_VIOLATION',
+          message: 'STALE_RESET_ID: تم تصفير النظام مركزياً. الحركات المتبقية من الجلسة السابقة مرفوضة.',
           serverBoundary: serverDb.resetBoundary
         });
       }
@@ -260,9 +304,10 @@ app.post('/api/sync/transactions', (req, res) => {
       if (serverDb.resetBoundary && serverDb.resetBoundary.resetId) {
         if (!effectiveItemResetId || effectiveItemResetId !== serverDb.resetBoundary.resetId) {
           return res.status(409).json({
-            code: 'RESET_BOUNDARY_VIOLATION',
-            error: 'RESET_BOUNDARY_VIOLATION',
-            message: 'تم تصفير النظام مركزياً. الحركات المتبقية من الجلسة السابقة مرفوضة.',
+            code: 'STALE_RESET_ID',
+            error: 'STALE_RESET_ID',
+            legacyCode: 'RESET_BOUNDARY_VIOLATION',
+            message: 'STALE_RESET_ID: تم تصفير النظام مركزياً. الحركات المتبقية من الجلسة السابقة مرفوضة.',
             serverBoundary: serverDb.resetBoundary
           });
         }
@@ -329,18 +374,22 @@ app.post('/api/sync/transactions', (req, res) => {
       // Execute transaction on server state
       switch (operationType) {
         case 'MANUAL_STOCK_ADJUSTMENT': {
-          const cat = payload.category as StockCategory;
+          const cat = (payload.itemId || payload.category) as StockCategory;
           const stock = serverDb.stocks[cat];
           if (stock) {
             const oldStock = stock.currentStock;
-            const newActual = Number(payload.newActualStock) || 0;
+            const newActual = Number(payload.newStock ?? payload.newActualStock) || 0;
             const diff = newActual - oldStock;
-            const prevStockInPayload = typeof payload.previousStock === 'number' ? payload.previousStock : (typeof payload.oldStock === 'number' ? payload.oldStock : oldStock);
+            const prevStockInPayload = typeof payload.oldStock === 'number'
+              ? payload.oldStock
+              : (typeof payload.previousStock === 'number' ? payload.previousStock : oldStock);
+            const creator = payload.createdBy || payload.performedBy || 'غير محدد';
+            const opId = payload.operationId || recordId;
 
             // Point 6: Conflict detection for offline devices
             // If another device changed stock while this device was offline (baseline mismatch and distinct adjustment exists)
             const hasConflictingAdjustment = prevStockInPayload !== oldStock && serverDb.auditLogs.some(a =>
-              a.category === cat &&
+              (a.category === cat || a.itemId === cat) &&
               (a.operationType === 'MANUAL_STOCK_ADJUSTMENT' || a.action === 'تسوية رصيد جرد يدوي صريح') &&
               a.transactionId !== transactionId
             );
@@ -352,16 +401,20 @@ app.post('/api/sync/transactions', (req, res) => {
                 timestamp: new Date().toISOString(),
                 action: 'SYNC_CONFLICT',
                 category: cat,
+                itemId: cat,
                 details: `تعارض تسوية رصيد جرد بين جهازين للصنف (${cat}): الرصيد على الخادم (${oldStock}) بينما القيمة الواردة من الجهاز (${newActual})، تم رفض الاستبدال الصامت`,
-                performedBy: payload.performedBy || 'نظام مراقبة النزاعات والمزامنة',
+                performedBy: creator,
+                createdBy: creator,
                 previousValue: oldStock,
                 newValue: newActual,
                 oldStock,
+                newStock: newActual,
                 newActualStock: newActual,
                 difference: diff,
                 reason: payload.reason,
                 notes: 'تم رفض الاستبدال الصامت للرصيد الفعلي بسبب وجود تعارض جرد أوفلاين',
                 transactionId,
+                operationId: opId,
                 operationKey,
                 deviceId: payload.deviceId || deviceId || 'غير محدد',
                 operationType: 'MANUAL_STOCK_ADJUSTMENT'
@@ -377,16 +430,20 @@ app.post('/api/sync/transactions', (req, res) => {
                 timestamp: payload.timestamp || new Date().toISOString(),
                 action: 'تسوية رصيد جرد يدوي صريح',
                 category: cat,
+                itemId: cat,
                 details: `تعديل الرصيد الفعلي من ${oldStock} إلى ${newActual} (الفارق: ${diff > 0 ? `+${diff}` : diff}) - السبب: ${payload.reason} - ${payload.notes || ''}`,
-                performedBy: payload.performedBy || 'غير محدد',
+                performedBy: creator,
+                createdBy: creator,
                 previousValue: oldStock,
                 newValue: newActual,
                 oldStock,
+                newStock: newActual,
                 newActualStock: newActual,
                 difference: diff,
                 reason: payload.reason,
                 notes: payload.notes || '',
                 transactionId,
+                operationId: opId,
                 operationKey,
                 deviceId: payload.deviceId || deviceId || 'غير محدد',
                 operationType: 'MANUAL_STOCK_ADJUSTMENT'
@@ -397,8 +454,10 @@ app.post('/api/sync/transactions', (req, res) => {
           break;
         }
         case 'OPENING_BALANCE_SET': {
-          const cat = payload.category as StockCategory;
+          const cat = (payload.itemId || payload.category) as StockCategory;
           const qty = Number(payload.quantity) || 0;
+          const creator = payload.createdBy || payload.inventoryKeeper || 'غير محدد';
+          const opId = payload.operationId || recordId;
           const stock = serverDb.stocks[cat];
           const hasExistingMovements = Boolean(
             stock && (
@@ -418,12 +477,15 @@ app.post('/api/sync/transactions', (req, res) => {
               timestamp: new Date().toISOString(),
               action: 'SYNC_CONFLICT',
               category: cat,
+              itemId: cat,
               details: `تعارض في تسجيل رصيد أول المدة للصنف (${cat}): القيمة الحالية المعتمدة (${existingOb?.quantity}) مقابل القيمة الواردة (${qty}). تم رفض الاستبدال الصامت.`,
-              performedBy: payload.inventoryKeeper || 'نظام المراقبة والمزامنة',
+              performedBy: creator,
+              createdBy: creator,
               previousValue: existingOb?.quantity,
               newValue: qty,
               reason: 'تعارض رصيد أول مدة بين الأجهزة',
               transactionId,
+              operationId: opId,
               operationKey,
               deviceId: payload.deviceId || deviceId || 'غير محدد',
               operationType: 'OPENING_BALANCE_SET'
@@ -434,7 +496,7 @@ app.post('/api/sync/transactions', (req, res) => {
               category: cat,
               quantity: qty,
               inventoryDate: payload.inventoryDate || new Date().toISOString().split('T')[0],
-              inventoryKeeper: payload.inventoryKeeper || 'غير محدد',
+              inventoryKeeper: creator,
               notes: payload.notes || ''
             };
             if (stock) {
@@ -450,10 +512,13 @@ app.post('/api/sync/transactions', (req, res) => {
               timestamp: payload.timestamp || new Date().toISOString(),
               action: 'تحديد رصيد أول المدة',
               category: cat,
-              details: `اعتماد رصيد أول المدة للصنف بقيمة ${qty} بواسطة ${payload.inventoryKeeper || 'غير محدد'}`,
-              performedBy: payload.inventoryKeeper || 'غير محدد',
+              itemId: cat,
+              details: `اعتماد رصيد أول المدة للصنف بقيمة ${qty} بواسطة ${creator}`,
+              performedBy: creator,
+              createdBy: creator,
               newValue: qty,
               transactionId,
+              operationId: opId,
               operationKey,
               deviceId: payload.deviceId || deviceId || 'غير محدد',
               operationType: 'OPENING_BALANCE_SET'
