@@ -663,10 +663,12 @@ export function manualAdjustStock(
   const operationKey = `MANUAL_STOCK_ADJUSTMENT:${adjId}:1`;
   const deviceId = getDeviceId();
   const creator = performedBy || db.officeSettings.currentEmployee || 'غير محدد';
+  const resetId = db.resetBoundary?.resetId || 'default';
 
   db.auditLogs.unshift({
     id: generateStableId('audit'),
     timestamp: now,
+    createdAt: now,
     action: 'تسوية رصيد جرد يدوي صريح',
     category,
     itemId: category,
@@ -685,6 +687,7 @@ export function manualAdjustStock(
     operationId: adjId,
     operationKey,
     deviceId,
+    resetId,
     operationType: 'MANUAL_STOCK_ADJUSTMENT'
   });
 
@@ -707,10 +710,12 @@ export function manualAdjustStock(
       notes,
       performedBy: creator,
       createdBy: creator,
+      createdAt: now,
       timestamp: now,
       transactionId,
       operationKey,
-      deviceId
+      deviceId,
+      resetId
     },
     transactionId
   );
@@ -729,6 +734,10 @@ export function setOpeningBalance(
 ): DatabaseSchema {
   const db = loadDatabase();
   const now = new Date().toISOString();
+  const stock = db.stocks[category];
+  const oldStock = stock ? stock.openingStock : 0;
+  const newStock = quantity;
+  const reason = notes || 'اعتماد رصيد أول المدة';
 
   db.openingBalances[category] = {
     category,
@@ -738,7 +747,6 @@ export function setOpeningBalance(
     notes
   };
 
-  const stock = db.stocks[category];
   if (stock) {
     // Does NOT wipe or zero currentStock if already initialized!
     const openingDiff = quantity - stock.openingStock;
@@ -757,21 +765,27 @@ export function setOpeningBalance(
   const operationKey = `OPENING_BALANCE_SET:${opbId}:1`;
   const deviceId = getDeviceId();
   const creator = inventoryKeeper || db.officeSettings.currentEmployee || 'غير محدد';
+  const resetId = db.resetBoundary?.resetId || 'default';
 
   db.auditLogs.unshift({
     id: generateStableId('audit'),
     timestamp: now,
+    createdAt: now,
     action: 'تحديد رصيد أول المدة',
     category,
     itemId: category,
     details: `اعتماد رصيد أول المدة للصنف بقيمة ${quantity} بواسطة ${creator}`,
     performedBy: creator,
     createdBy: creator,
+    oldStock,
+    newStock,
+    reason,
     newValue: quantity,
     transactionId,
     operationId: opbId,
     operationKey,
     deviceId,
+    resetId,
     operationType: 'OPENING_BALANCE_SET'
   });
 
@@ -785,15 +799,20 @@ export function setOpeningBalance(
       operationId: opbId,
       itemId: category,
       category,
+      oldStock,
+      newStock,
       quantity,
+      reason,
       inventoryDate: now.split('T')[0],
       inventoryKeeper: creator,
       createdBy: creator,
+      createdAt: now,
       notes,
       timestamp: now,
       transactionId,
       operationKey,
-      deviceId
+      deviceId,
+      resetId
     },
     transactionId
   );

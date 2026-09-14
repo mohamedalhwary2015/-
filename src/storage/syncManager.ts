@@ -254,6 +254,32 @@ export async function executeAutoSync(
  * RULE 3: PROTECTS currentStock from arbitrary overwrite!
  */
 export function mergeServerDataSafely(localDb: DatabaseSchema, serverData: Partial<DatabaseSchema>): DatabaseSchema {
+  // Strict Reset Boundary Enforcement (Rules 6 & 7):
+  // If server has a new resetId from a Factory Reset, old offline records cannot be merged or preserved!
+  if (
+    serverData.resetBoundary?.resetId &&
+    localDb.resetBoundary?.resetId &&
+    serverData.resetBoundary.resetId !== localDb.resetBoundary.resetId
+  ) {
+    console.warn('STALE_RESET_ID: Server has a new resetId. Clearing stale offline queue and adopting server baseline.');
+    clearPendingQueue();
+    localDb.resetBoundary = serverData.resetBoundary;
+    localDb.supplies = (serverData.supplies || []).map(s => ({ ...s, syncStatus: 'synced' }));
+    localDb.dispenses = (serverData.dispenses || []).map(d => ({ ...d, syncStatus: 'synced' }));
+    localDb.lateRegistrations = (serverData.lateRegistrations || []).map(r => ({ ...r, syncStatus: 'synced' }));
+    localDb.tombstones = serverData.tombstones || [];
+    localDb.openingBalances = serverData.openingBalances || ({} as any);
+    if (serverData.stocks) {
+      localDb.stocks = JSON.parse(JSON.stringify(serverData.stocks));
+    }
+    if (serverData.auditLogs) {
+      localDb.auditLogs = serverData.auditLogs;
+    }
+    localDb.version = serverData.version || 1;
+    saveDatabase(localDb, false);
+    return localDb;
+  }
+
   let changed = false;
 
   // 1. Tombstones merge & local active records cleanup (Rule 9 & Rule 22: prevents resurrection)

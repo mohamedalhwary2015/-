@@ -52,6 +52,20 @@ export interface BalanceMismatchItem {
   description: string;
 }
 
+export interface StockDiscrepancyItem {
+  code: 'STOCK_DISCREPANCY';
+  category: StockCategory;
+  categoryLabel: string;
+  currentStock: number;
+  calculatedStock: number;
+  difference: number;
+  received: number;
+  dispensed: number;
+  opening: number;
+  timestamp: string;
+  source: string;
+}
+
 export interface ProductionRepairDiagnosticReport {
   timestamp: string;
   isDiagnosticOnly: true;
@@ -65,13 +79,7 @@ export interface ProductionRepairDiagnosticReport {
   invalidTransactions: { id: string; type: string; reason: string }[];
   metadataDiscrepancies: { field: string; localValue: any; serverValue: any }[];
   balanceMismatches: BalanceMismatchItem[];
-  stockDiscrepancies: {
-    category: StockCategory;
-    categoryLabel: string;
-    currentStock: number;
-    theoreticalStock: number;
-    difference: number;
-  }[];
+  stockDiscrepancies: StockDiscrepancyItem[];
   summary: {
     totalOfflineOnly: number;
     totalOnlineOnly: number;
@@ -324,14 +332,20 @@ export function executeProductionRepair(
 
   // 8. Balance Mismatches & Stock discrepancies (Diagnostic only - strictly does not change currentStock)
   const fullCheck = runFullIntegrityCheck(localDb);
-  const stockDiscrepancies = fullCheck.categoryAudits
+  const stockDiscrepancies: StockDiscrepancyItem[] = fullCheck.categoryAudits
     .filter(ca => !ca.isBalanced)
     .map(ca => ({
+      code: 'STOCK_DISCREPANCY',
       category: ca.category,
       categoryLabel: CATEGORY_LABELS[ca.category] || ca.category,
       currentStock: ca.currentStock,
-      theoreticalStock: ca.theoreticalStock,
-      difference: ca.difference
+      calculatedStock: ca.theoreticalStock,
+      difference: ca.difference,
+      received: ca.totalReceived,
+      dispensed: ca.totalDispensed,
+      opening: ca.openingStock,
+      timestamp: now,
+      source: 'محرك الفحص والتشخيص الرقابي - مكتب صحة سفلاق'
     }));
 
   const balanceMismatches: BalanceMismatchItem[] = [];

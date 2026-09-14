@@ -267,7 +267,11 @@ app.post('/api/sync/transactions', (req, res) => {
         return res.status(400).json({ error: 'معرف الحركة transactionId مفقود أو غير صالح', item });
       }
       if (!operationKey || typeof operationKey !== 'string' || !operationKey.trim()) {
-        return res.status(400).json({ error: 'مفتاح العملية operationKey مفقود أو غير صالح', item });
+        return res.status(400).json({
+          code: 'INVALID_OPERATION_KEY',
+          error: 'INVALID_OPERATION_KEY: مفتاح العملية operationKey مفقود أو غير صالح',
+          item
+        });
       }
       if (!recordId || typeof recordId !== 'string' || !recordId.trim()) {
         return res.status(400).json({ error: 'معرف السجل recordId مفقود أو غير صالح', item });
@@ -755,6 +759,128 @@ app.post('/api/database/factory-reset', (req, res) => {
       success: true,
       message: 'تم تصفير الخادم وتأسيس حد أمان زمني جديد مع حفظ نسخة احتياطية',
       resetBoundary: cleanDb.resetBoundary
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Controlled Production Repair Apply Endpoint (Rule 9)
+ * STRICT MANDATES:
+ * - NEVER allows cleanDb to overwrite currentStock or recalculate balances.
+ * - NEVER allows dropping real supplies or dispenses without verified tombstones.
+ * - Enforces resetId consistency.
+ * - Rejects any attempt to mutate operational balances with REPAIR_REQUIRES_EXPLICIT_APPROVAL.
+ */
+app.post('/api/repair/apply', (req, res) => {
+  try {
+    const { cleanDb, explicitApproval, operatorName } = req.body;
+    if (!cleanDb || typeof cleanDb !== 'object') {
+      return res.status(400).json({
+        code: 'INVALID_REPAIR_PAYLOAD',
+        error: 'بيانات الإصلاح غير صالحة'
+      });
+    }
+
+    const serverDb = loadServerDb();
+
+    // 1. Check resetId
+    if (serverDb.resetBoundary && serverDb.resetBoundary.resetId) {
+      if (!cleanDb.resetBoundary?.resetId || cleanDb.resetBoundary.resetId !== serverDb.resetBoundary.resetId) {
+        return res.status(409).json({
+          code: 'STALE_RESET_ID',
+          error: 'STALE_RESET_ID',
+          message: 'STALE_RESET_ID: معرف التصفير غير متطابق مع الخادم المركزي'
+        });
+      }
+    }
+
+    // 2. Check currentStock protection (Rule 1, 2, 9)
+    const stockViolations: string[] = [];
+    for (const cat of STOCK_CATEGORIES) {
+      const serverCurrent = serverDb.stocks[cat]?.currentStock ?? 0;
+      const cleanCurrent = cleanDb.stocks?.[cat]?.currentStock ?? 0;
+      if (serverCurrent !== cleanCurrent) {
+        stockViolations.push(`صنف ${cat}: رصيد الخادم (${serverCurrent}) مقابل المطلوب تطبيقه (${cleanCurrent})`);
+      }
+    }
+
+    if (stockViolations.length > 0) {
+      return res.status(400).json({
+        code: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL',
+        error: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL',
+        message: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL: لا يجوز لعملية الإصلاح تعديل currentStock تلقائياً. تعديل الرصيد يتطلب تسوية جرد يدوية صريحة.',
+        stockViolations
+      });
+    }
+
+    // 3. Check supplies protection: real supplies must not be dropped without tombstones
+    const cleanSupplyMap = new Map((cleanDb.supplies || []).map((s: any) => [s.id, s]));
+    const cleanTombstones = new Set((cleanDb.tombstones || []).map((t: any) => t.recordId));
+    const supplyViolations: string[] = [];
+
+    for (const s of serverDb.supplies || []) {
+      if (s.isDeleted) continue;
+      const cleanSup = cleanSupplyMap.get(s.id);
+      if (!cleanSup && !cleanTombstones.has(s.id)) {
+        supplyViolations.push(`توريد حقيقي مفقود دون شاهد حذف: ${s.id} (${s.documentNumber})`);
+      } else if (cleanSup) {
+        if (cleanSup.quantity !== s.quantity || cleanSup.category !== s.category) {
+          supplyViolations.push(`تعديل غير مصرح به لكمية أو صنف التوريد الحقيقي: ${s.id}`);
+        }
+      }
+    }
+
+    // 4. Check dispenses protection: real dispenses must not be dropped without tombstones
+    const cleanDispenseMap = new Map((cleanDb.dispenses || []).map((d: any) => [d.id, d]));
+    const dispenseViolations: string[] = [];
+
+    for (const d of serverDb.dispenses || []) {
+      if (d.isDeleted) continue;
+      const cleanDsp = cleanDispenseMap.get(d.id);
+      if (!cleanDsp && !cleanTombstones.has(d.id)) {
+        dispenseViolations.push(`صرف حقيقي مفقود دون شاهد حذف: ${d.id} (${d.citizenName})`);
+      } else if (cleanDsp) {
+        if (cleanDsp.quantity !== d.quantity || cleanDsp.category !== d.category) {
+          dispenseViolations.push(`تعديل غير مصرح به لكمية أو صنف المنصرف الحقيقي: ${d.id}`);
+        }
+      }
+    }
+
+    if (supplyViolations.length > 0 || dispenseViolations.length > 0) {
+      return res.status(400).json({
+        code: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL',
+        error: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL',
+        message: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL: لا يمكن حذف أو تعديل حركات حقيقية تلقائياً عبر Repair Apply.',
+        supplyViolations,
+        dispenseViolations
+      });
+    }
+
+    if (!explicitApproval) {
+      return res.status(400).json({
+        code: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL',
+        error: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL',
+        message: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL: تطبيق الإصلاح يتطلب موافقة صريحة ومحددة من المشغل'
+      });
+    }
+
+    // Backup current DB before applying verified repair
+    if (fs.existsSync(DB_FILE)) {
+      try {
+        const backupFile = path.join(DATA_DIR, `snapshot-backup-pre-repair-${Date.now()}.json`);
+        fs.copyFileSync(DB_FILE, backupFile);
+      } catch (err) {
+        console.warn('Backup error before repair apply:', err);
+      }
+    }
+
+    saveServerDb(cleanDb);
+
+    return res.json({
+      success: true,
+      message: 'تم تطبيق تقرير الإصلاح المعتمد بأمان تام ودون المساس بالأرصدة أو الحركات الحقيقية'
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
