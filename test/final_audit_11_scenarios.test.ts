@@ -21,6 +21,7 @@ import {
   mergeServerDataSafely
 } from '../src/storage/syncManager';
 import { generateOfficialMonthlyReport } from '../src/services/reportService';
+import { executeProductionRepair } from '../src/storage/repairEngine';
 import { DatabaseSchema, StockCategory, SyncTransactionItem, STOCK_CATEGORIES } from '../src/types';
 
 // Mock storage
@@ -329,14 +330,14 @@ function processTransactionsOnServer(
   };
 }
 
-describe('Final Audit: اختبار سيناريوهات التدقيق الإلزامية الـ 11', () => {
+describe('Final Audit: اختبار سيناريوهات التدقيق الإلزامية الشاملة (Tests A - L)', () => {
   beforeEach(() => {
     storageMap.clear();
     clearPendingQueue();
   });
 
-  // Test 1: إضافة Supply حقيقي → Sync مرتين → يجب ألا يتكرر
-  it('Test 1: إضافة Supply حقيقي → Sync مرتين → يجب ألا يتكرر', () => {
+  // Test A: Supply → Sync → Sync مرة ثانية (Expected: عملية واحدة فقط)
+  it('Test A: Supply → Sync → Sync مرة ثانية (Expected: عملية واحدة فقط)', () => {
     const db = createEmptyDatabase();
     db.stocks.birth_certificates.currentStock = 100;
     saveDatabase(db);
@@ -376,8 +377,8 @@ describe('Final Audit: اختبار سيناريوهات التدقيق الإل
     assert.equal(res2.serverDb.supplies.length, 1);
   });
 
-  // Test 2: إضافة Dispense حقيقي → Sync مرتين → يجب ألا يتكرر الخصم
-  it('Test 2: إضافة Dispense حقيقي → Sync مرتين → يجب ألا يتكرر الخصم', () => {
+  // Test B: Dispense → Sync → Sync مرة ثانية (Expected: خصم واحد فقط)
+  it('Test B: Dispense → Sync → Sync مرة ثانية (Expected: خصم واحد فقط)', () => {
     const db = createEmptyDatabase();
     db.stocks.birth_certificates.currentStock = 100;
     saveDatabase(db);
@@ -418,8 +419,8 @@ describe('Final Audit: اختبار سيناريوهات التدقيق الإل
     assert.equal(res2.serverDb.dispenses.length, 1);
   });
 
-  // Test 3: UPDATE_DISPENSE → يجب تطبيق فرق الكمية مرة واحدة فقط
-  it('Test 3: UPDATE_DISPENSE → يجب تطبيق فرق الكمية مرة واحدة فقط', () => {
+  // Test C: Update Dispense (Expected: تطبيق الفرق الصحيح مرة واحدة)
+  it('Test C: Update Dispense (Expected: تطبيق الفرق الصحيح مرة واحدة)', () => {
     const db = createEmptyDatabase();
     db.stocks.health_cards_male.currentStock = 50;
     saveDatabase(db);
@@ -460,8 +461,8 @@ describe('Final Audit: اختبار سيناريوهات التدقيق الإل
     assert.equal(res2.serverDb.stocks.health_cards_male.currentStock, 36);
   });
 
-  // Test 4: DELETE_DISPENSE → يجب إعادة الكمية مرة واحدة فقط
-  it('Test 4: DELETE_DISPENSE → يجب إعادة الكمية مرة واحدة فقط', () => {
+  // Test D: Delete Dispense (Expected: إعادة الكمية مرة واحدة)
+  it('Test D: Delete Dispense (Expected: إعادة الكمية مرة واحدة)', () => {
     const db = createEmptyDatabase();
     db.stocks.death_certificates.currentStock = 40;
     saveDatabase(db);
@@ -502,8 +503,8 @@ describe('Final Audit: اختبار سيناريوهات التدقيق الإل
     assert.equal(res2.serverDb.stocks.death_certificates.currentStock, 40);
   });
 
-  // Test 5: MANUAL_STOCK_ADJUSTMENT → يجب تنفيذها مرة واحدة فقط
-  it('Test 5: MANUAL_STOCK_ADJUSTMENT → يجب تنفيذها مرة واحدة فقط', () => {
+  // Test E: Manual Stock Adjustment (Expected: تعديل واحد فقط + Audit)
+  it('Test E: Manual Stock Adjustment (Expected: تعديل واحد فقط + Audit)', () => {
     const db = createEmptyDatabase();
     db.stocks.birth_certificates.currentStock = 120;
     saveDatabase(db);
@@ -533,8 +534,8 @@ describe('Final Audit: اختبار سيناريوهات التدقيق الإل
     assert.equal(res1.serverDb.stocks.birth_certificates.damagedOrCancelled, 5);
   });
 
-  // Test 6: نفس MANUAL_STOCK_ADJUSTMENT تصل مرتين → لا يتكرر تأثيرها
-  it('Test 6: نفس MANUAL_STOCK_ADJUSTMENT تصل مرتين → لا يتكرر تأثيرها', () => {
+  // Test F: إرسال Manual Adjustment مرتين (Expected: Idempotent، لا يوجد خصم/زيادة ثانية)
+  it('Test F: إرسال Manual Adjustment مرتين (Expected: Idempotent، لا يوجد خصم/زيادة ثانية)', () => {
     const db = createEmptyDatabase();
     db.stocks.birth_certificates.currentStock = 100;
     saveDatabase(db);
@@ -567,8 +568,8 @@ describe('Final Audit: اختبار سيناريوهات التدقيق الإل
     assert.equal(res2.serverDb.stocks.birth_certificates.damagedOrCancelled, 10);
   });
 
-  // Test 7: عمليتان متعارضتان لنفس الرصيد → Conflict وليس Last Write Wins
-  it('Test 7: عمليتان متعارضتان لنفس الرصيد → Conflict وليس Last Write Wins', () => {
+  // Test G: عمليتان متعارضتان (Expected: Conflict وليس Last Write Wins)
+  it('Test G: عمليتان متعارضتان (Expected: Conflict وليس Last Write Wins)', () => {
     const serverDb = createEmptyDatabase();
     serverDb.stocks.birth_certificates.currentStock = 100;
     const processedKeys = new Set<string>();
@@ -642,8 +643,8 @@ describe('Final Audit: اختبار سيناريوهات التدقيق الإل
     assert.equal(conflictLog?.category, 'birth_certificates');
   });
 
-  // Test 8: OPENING_BALANCE_SET مع وجود حركات فعلية → يجب رفض استبدال currentStock
-  it('Test 8: OPENING_BALANCE_SET مع وجود حركات فعلية → يجب رفض استبدال currentStock', () => {
+  // Test H: Opening Balance مع وجود حركات حقيقية (Expected: رفض استبدال currentStock)
+  it('Test H: Opening Balance مع وجود حركات حقيقية (Expected: رفض استبدال currentStock)', () => {
     const serverDb = createEmptyDatabase();
     // Establish running stock with movements
     serverDb.stocks.birth_certificates.currentStock = 250;
@@ -694,8 +695,22 @@ describe('Final Audit: اختبار سيناريوهات التدقيق الإل
     assert.equal(serverDb.stocks.birth_certificates.currentStock, 250, 'يجب حماية الرصيد الفعلي الحالي وعدم استبداله');
   });
 
-  // Test 9: Factory Reset → جهاز Offline قديم يعود Online → يجب رفض بياناته القديمة
-  it('Test 9: Factory Reset → جهاز Offline قديم يعود Online → يجب رفض بياناته القديمة', () => {
+  // Test I: Factory Reset (Expected: resetId جديد)
+  it('Test I: Factory Reset (Expected: resetId جديد وفريد)', () => {
+    const initialDb = createEmptyDatabase();
+    const oldResetId = initialDb.resetBoundary.resetId;
+    assert.ok(oldResetId, 'يوجد resetId ابتدائي');
+
+    const resetDb = executeFactoryReset('مدير النظام المعتمد');
+    assert.ok(resetDb.resetBoundary.resetId, 'تم إنشاء resetId جديد');
+    assert.notEqual(resetDb.resetBoundary.resetId, oldResetId, 'resetId الجديد فريد ومختلف عن القديم');
+    assert.equal(resetDb.supplies.length, 0);
+    assert.equal(resetDb.dispenses.length, 0);
+    assert.equal(resetDb.stocks.birth_certificates.currentStock, 0);
+  });
+
+  // Test J: جهاز Offline قديم بعد Factory Reset (Expected: STALE / REJECT)
+  it('Test J: جهاز Offline قديم بعد Factory Reset (Expected: STALE / REJECT)', () => {
     // 1. Pre-reset server
     const serverDb = createEmptyDatabase();
     serverDb.resetBoundary = {
@@ -755,8 +770,71 @@ describe('Final Audit: اختبار سيناريوهات التدقيق الإل
     assert.equal(res.serverDb.supplies.length, 0);
   });
 
-  // Test 10: فتح التقارير → يجب ألا يتم إنشاء أي حركة أو تعديل أي رصيد
-  it('Test 10: فتح التقارير → يجب ألا يتم إنشاء أي حركة أو تعديل أي رصيد', () => {
+  // Test K: Repair (Expected: تشخيص فقط، دون إعادة حساب currentStock)
+  it('Test K: Repair (Expected: تشخيص فقط، دون إعادة حساب currentStock)', () => {
+    const localDb = createEmptyDatabase();
+    // Simulate stock discrepancy: currentStock is 100, but supply sum is 150
+    localDb.stocks.birth_certificates.currentStock = 100;
+    localDb.stocks.birth_certificates.openingStock = 0;
+    localDb.stocks.birth_certificates.totalReceived = 150;
+    localDb.supplies.push({
+      id: 'sup-rep-1',
+      transactionId: 'tx-sup-rep-1',
+      documentNumber: 'SUP-99',
+      date: '2026-03-01',
+      category: 'birth_certificates',
+      quantity: 150,
+      receivedBy: 'أمين المخزن',
+      supplierSource: 'المديرية',
+      version: 1,
+      updatedAt: '2026-03-01T08:00:00Z'
+    });
+
+    const report = executeProductionRepair(localDb);
+
+    // Diagnostic report detects difference
+    assert.ok(report, 'تم توليد تقرير الفحص التشخيصي');
+    assert.equal(report.isDiagnosticOnly, true, 'الفحص تشخيصي بحت دون تعديل تلقائي');
+    assert.ok(report.stockDiscrepancies.some(b => b.category === 'birth_certificates'), 'اكتشف الفرق بين الرصيد الفعلي وحركة التوريد');
+    // CRITICAL: currentStock MUST NOT be modified or recalculated by repair engine!
+    assert.equal(localDb.stocks.birth_certificates.currentStock, 100, 'الرصيد الفعلي لم يتغير ولم يستبدل تلقائياً');
+  });
+
+  // Test L: Production startup (Expected: لا Demo / Seed / Mock records)
+  it('Test L: Production startup (Expected: لا Demo / Seed / Mock records)', () => {
+    const emptyDb = createEmptyDatabase();
+
+    // Verify zero counts across all collections
+    assert.equal(emptyDb.supplies.length, 0);
+    assert.equal(emptyDb.dispenses.length, 0);
+    assert.equal(emptyDb.lateRegistrations.length, 0);
+    assert.equal(emptyDb.tombstones.length, 0);
+
+    // Verify all stock categories are zero initialized
+    for (const cat of STOCK_CATEGORIES) {
+      const s = emptyDb.stocks[cat];
+      assert.ok(s, `الصنف ${cat} موجود`);
+      assert.equal(s.currentStock, 0, `الرصيد الفعلي للصنف ${cat} يجب أن يكون صفر`);
+      assert.equal(s.openingStock, 0);
+      assert.equal(s.totalReceived, 0);
+      assert.equal(s.totalDispensed, 0);
+      assert.equal(s.damagedOrCancelled, 0);
+    }
+
+    // Verify no mock employee name
+    assert.equal(emptyDb.officeSettings.currentEmployee, 'غير محدد');
+
+    // Loading from fresh storage must produce clean state
+    storageMap.clear();
+    const loaded = loadDatabase();
+    assert.equal(loaded.supplies.length, 0);
+    assert.equal(loaded.dispenses.length, 0);
+    assert.equal(loaded.stocks.birth_certificates.currentStock, 0);
+    assert.equal(loaded.officeSettings.currentEmployee, 'غير محدد');
+  });
+
+  // Test M: التقارير Read-Only (Expected: فتح التقرير لا ينشئ أي حركة أو يعدل أي رصيد)
+  it('Test M: التقارير Read-Only (Expected: فتح التقرير لا ينشئ أي حركة أو يعدل أي رصيد)', () => {
     const db = createEmptyDatabase();
     db.stocks.health_cards_male.currentStock = 77;
     db.stocks.health_cards_male.openingStock = 50;
@@ -794,38 +872,5 @@ describe('Final Audit: اختبار سيناريوهات التدقيق الإل
     const afterJson = JSON.stringify(db);
     assert.equal(beforeJson, afterJson, 'توليد التقرير لم يغير أي بايت في قاعدة البيانات');
     assert.equal(db.stocks.health_cards_male.currentStock, 77);
-  });
-
-  // Test 11: تشغيل Production من قاعدة بيانات نظيفة → لا تظهر أي Demo/Seed/Mock data
-  it('Test 11: تشغيل Production من قاعدة بيانات نظيفة → لا تظهر أي Demo/Seed/Mock data', () => {
-    const emptyDb = createEmptyDatabase();
-
-    // Verify zero counts across all collections
-    assert.equal(emptyDb.supplies.length, 0);
-    assert.equal(emptyDb.dispenses.length, 0);
-    assert.equal(emptyDb.lateRegistrations.length, 0);
-    assert.equal(emptyDb.tombstones.length, 0);
-
-    // Verify all stock categories are zero initialized
-    for (const cat of STOCK_CATEGORIES) {
-      const s = emptyDb.stocks[cat];
-      assert.ok(s, `الصنف ${cat} موجود`);
-      assert.equal(s.currentStock, 0, `الرصيد الفعلي للصنف ${cat} يجب أن يكون صفر`);
-      assert.equal(s.openingStock, 0);
-      assert.equal(s.totalReceived, 0);
-      assert.equal(s.totalDispensed, 0);
-      assert.equal(s.damagedOrCancelled, 0);
-    }
-
-    // Verify no mock employee name
-    assert.equal(emptyDb.officeSettings.currentEmployee, 'غير محدد');
-
-    // Loading from fresh storage must produce clean state
-    storageMap.clear();
-    const loaded = loadDatabase();
-    assert.equal(loaded.supplies.length, 0);
-    assert.equal(loaded.dispenses.length, 0);
-    assert.equal(loaded.stocks.birth_certificates.currentStock, 0);
-    assert.equal(loaded.officeSettings.currentEmployee, 'غير محدد');
   });
 });
