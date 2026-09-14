@@ -297,6 +297,26 @@ export function mergeServerDataSafely(localDb: DatabaseSchema, serverData: Parti
     }
   }
 
+  // 1.5. Opening Balances merge (Pre-requisite for initial stock baseline before applying supplies/dispenses)
+  if (serverData.openingBalances) {
+    localDb.openingBalances = localDb.openingBalances || ({} as any);
+    for (const [cat, ob] of Object.entries(serverData.openingBalances)) {
+      const stockCat = cat as StockCategory;
+      const localOb = localDb.openingBalances[stockCat];
+      if (!localOb || (ob && ob.quantity !== localOb.quantity)) {
+        localDb.openingBalances[stockCat] = ob;
+        const stock = localDb.stocks[stockCat];
+        if (stock) {
+          stock.openingStock = ob.quantity;
+          if (stock.currentStock === 0 && stock.totalReceived === 0 && stock.totalDispensed === 0) {
+            stock.currentStock = ob.quantity;
+          }
+        }
+        changed = true;
+      }
+    }
+  }
+
   // 2. Supplies merge with version check
   const tombstoneSet = new Set(localDb.tombstones.map(t => t.recordId));
   const localSuppliesMap = new Map(localDb.supplies.map(s => [s.id, s]));
@@ -398,27 +418,7 @@ export function mergeServerDataSafely(localDb: DatabaseSchema, serverData: Parti
     }
   }
 
-  // 5. Opening Balances merge
-  if (serverData.openingBalances) {
-    localDb.openingBalances = localDb.openingBalances || ({} as any);
-    for (const [cat, ob] of Object.entries(serverData.openingBalances)) {
-      const stockCat = cat as StockCategory;
-      const localOb = localDb.openingBalances[stockCat];
-      if (!localOb || (ob && ob.quantity !== localOb.quantity)) {
-        localDb.openingBalances[stockCat] = ob;
-        const stock = localDb.stocks[stockCat];
-        if (stock) {
-          stock.openingStock = ob.quantity;
-          if (stock.currentStock === 0 && stock.totalReceived === 0 && stock.totalDispensed === 0) {
-            stock.currentStock = ob.quantity;
-          }
-        }
-        changed = true;
-      }
-    }
-  }
-
-  // 6. Audit logs merge (Rule 4 & Rule 15: strictly controlled, no arbitrary stock changes from regular logs)
+  // 5. Audit logs merge (Rule 4 & Rule 15: strictly controlled, no arbitrary stock changes from regular logs)
   if (serverData.auditLogs && Array.isArray(serverData.auditLogs)) {
     const localAuditIds = new Set((localDb.auditLogs || []).map(a => a.id));
     const pendingQueue = getPendingQueue();

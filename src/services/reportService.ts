@@ -151,12 +151,12 @@ export function generateOfficialMonthlyReport(
     // Strict Classification: Check transactionType and category
     if (d.transactionType === 'health_card_male' || d.category === 'health_cards_male') {
       healthCardsMaleTotal += d.quantity;
-      const fee = amt > 0 ? amt : d.quantity * (db.officeSettings?.healthCardMaleFee || 50);
+      const fee = typeof d.collectedAmount === 'number' ? d.collectedAmount : amt;
       healthCardsMaleRevenue += fee;
       healthCardRevenue += fee;
     } else if (d.transactionType === 'health_card_female' || d.category === 'health_cards_female') {
       healthCardsFemaleTotal += d.quantity;
-      const fee = amt > 0 ? amt : d.quantity * (db.officeSettings?.healthCardFemaleFee || 50);
+      const fee = typeof d.collectedAmount === 'number' ? d.collectedAmount : amt;
       healthCardsFemaleRevenue += fee;
       healthCardRevenue += fee;
     } else if (d.transactionType === 'birth' || d.category === 'birth_certificates') {

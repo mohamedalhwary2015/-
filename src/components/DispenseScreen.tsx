@@ -53,9 +53,7 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
     filterMode === 'health_cards' ? 'health_cards_male' : filterMode === 'death_certificates' ? 'death_certificates' : filterMode === 'notifications' ? 'birth_notifications' : 'birth_certificates'
   );
   const [quantity, setQuantity] = useState<number>(1);
-  const [collectedAmount, setCollectedAmount] = useState<number>(
-    filterMode === 'health_cards' ? (db.officeSettings?.healthCardMaleFee ?? 50) : filterMode === 'birth_certificates' ? (db.officeSettings?.birthCertFee ?? 0) : filterMode === 'death_certificates' ? (db.officeSettings?.deathCertFee ?? 0) : 0
-  );
+  const [collectedAmount, setCollectedAmount] = useState<number | ''>('');
   const [receiptNumber, setReceiptNumber] = useState('');
   const [serialNumber, setSerialNumber] = useState('');
   const [dispensedBy, setDispensedBy] = useState(db.officeSettings?.currentEmployee || 'غير محدد');
@@ -69,17 +67,17 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
     if (t === 'health_card_male') {
       setCategory('health_cards_male');
       setGender('ذكر');
-      setCollectedAmount(db.officeSettings?.healthCardMaleFee ?? 50);
+      setCollectedAmount('');
     } else if (t === 'health_card_female') {
       setCategory('health_cards_female');
       setGender('أنثى');
-      setCollectedAmount(db.officeSettings?.healthCardFemaleFee ?? 50);
+      setCollectedAmount('');
     } else if (t === 'birth') {
       setCategory('birth_certificates');
-      setCollectedAmount(db.officeSettings?.birthCertFee ?? 0);
+      setCollectedAmount('');
     } else if (t === 'death') {
       setCategory('death_certificates');
-      setCollectedAmount(db.officeSettings?.deathCertFee ?? 0);
+      setCollectedAmount('');
     } else if (t === 'birth_notification') {
       setCategory('birth_notifications');
       setCollectedAmount(0);
@@ -99,17 +97,17 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
       setTransactionType('health_card_male');
       setCategory('health_cards_male');
       setGender('ذكر');
-      setCollectedAmount(db.officeSettings?.healthCardMaleFee ?? 50);
+      setCollectedAmount('');
     } else if (filterMode === 'birth_certificates') {
       setTransactionType('birth');
       setCategory('birth_certificates');
       setGender('ذكر');
-      setCollectedAmount(db.officeSettings?.birthCertFee ?? 0);
+      setCollectedAmount('');
     } else if (filterMode === 'death_certificates') {
       setTransactionType('death');
       setCategory('death_certificates');
       setGender('غير محدد');
-      setCollectedAmount(db.officeSettings?.deathCertFee ?? 0);
+      setCollectedAmount('');
     } else if (filterMode === 'notifications') {
       setTransactionType('birth_notification');
       setCategory('birth_notifications');
@@ -119,7 +117,7 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
       setTransactionType('birth');
       setCategory('birth_certificates');
       setGender('ذكر');
-      setCollectedAmount(db.officeSettings?.birthCertFee ?? 0);
+      setCollectedAmount('');
     }
     setQuantity(1);
     setReceiptNumber('');
@@ -139,7 +137,7 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
     setCategory(rec.category);
     setGender(rec.gender || 'غير محدد');
     setQuantity(rec.quantity);
-    setCollectedAmount(rec.collectedAmount || 0);
+    setCollectedAmount(typeof rec.collectedAmount === 'number' ? rec.collectedAmount : '');
     setReceiptNumber(rec.receiptNumber || '');
     setSerialNumber(rec.serialNumber || '');
     setDispensedBy(rec.dispensedBy);
@@ -557,9 +555,9 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
                   <input
                     type="number"
                     min="0"
-                    required
+                    placeholder="أدخل المبلغ المحصل..."
                     value={collectedAmount}
-                    onChange={(e) => setCollectedAmount(Number(e.target.value))}
+                    onChange={(e) => setCollectedAmount(e.target.value === '' ? '' : Number(e.target.value))}
                     className="w-full px-3 py-2 border border-slate-300 rounded-lg text-xs sm:text-sm font-black text-amber-700 focus:outline-hidden focus:ring-2 focus:ring-teal-500"
                   />
                 </div>
