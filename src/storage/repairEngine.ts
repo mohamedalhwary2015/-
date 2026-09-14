@@ -30,6 +30,323 @@ export interface SuspectedRecord {
   suspicionReason: string;
 }
 
+export interface DiagnosticRecordItem {
+  id: string;
+  transactionId?: string;
+  type: 'supply' | 'dispense' | 'late_registration';
+  category?: StockCategory;
+  quantity?: number;
+  date?: string;
+  citizenOrDocument?: string;
+}
+
+export interface ProductionRepairDiagnosticReport {
+  timestamp: string;
+  isDiagnosticOnly: true;
+  offlineOnlyRecords: DiagnosticRecordItem[];
+  onlineOnlyRecords: DiagnosticRecordItem[];
+  inBothRecords: DiagnosticRecordItem[];
+  duplicates: { transactionId: string; count: number; type: string; recordIds: string[] }[];
+  tombstones: { recordId: string; recordType: string; deletedAt: string; transactionId?: string }[];
+  conflicts: { id: string; reason: string; details?: any }[];
+  demoSeedCandidates: SuspectedRecord[];
+  invalidTransactions: { id: string; type: string; reason: string }[];
+  metadataDiscrepancies: { field: string; localValue: any; serverValue: any }[];
+  stockDiscrepancies: {
+    category: StockCategory;
+    categoryLabel: string;
+    currentStock: number;
+    theoreticalStock: number;
+    difference: number;
+  }[];
+  summary: {
+    totalOfflineOnly: number;
+    totalOnlineOnly: number;
+    totalInBoth: number;
+    totalDuplicates: number;
+    totalTombstones: number;
+    totalDemoCandidates: number;
+    totalInvalidTransactions: number;
+    hasStockDiscrepancies: boolean;
+    guarantee: string;
+  };
+}
+
+/**
+ * Executes a strictly AUDIT / DIAGNOSTIC FIRST inspection of the database (Section 5).
+ * 
+ * STRICT MANDATE:
+ * - DOES NOT automatically rebuild or recalculate currentStock.
+ * - DOES NOT overwrite currentStock with Opening + Supply - Dispense.
+ * - DOES NOT automatically merge or delete online-only or offline-only records.
+ * - DOES NOT automatically delete suspected Demo / Seed records.
+ * - DOES NOT create MANUAL_STOCK_ADJUSTMENT or OPENING_BALANCE_SET automatically.
+ * - Returns a comprehensive diagnostic assessment without mutating data!
+ */
+export function executeProductionRepair(
+  localDb: DatabaseSchema,
+  serverDb?: DatabaseSchema
+): ProductionRepairDiagnosticReport {
+  const now = new Date().toISOString();
+
+  // 1. Map local records
+  const localSupplyMap = new Map((localDb.supplies || []).map(s => [s.id, s]));
+  const localDispenseMap = new Map((localDb.dispenses || []).map(d => [d.id, d]));
+  const serverSupplyMap = new Map((serverDb?.supplies || []).map(s => [s.id, s]));
+  const serverDispenseMap = new Map((serverDb?.dispenses || []).map(d => [d.id, d]));
+
+  const offlineOnlyRecords: DiagnosticRecordItem[] = [];
+  const onlineOnlyRecords: DiagnosticRecordItem[] = [];
+  const inBothRecords: DiagnosticRecordItem[] = [];
+
+  // Supplies comparison
+  for (const [id, sup] of localSupplyMap.entries()) {
+    if (serverDb) {
+      if (serverSupplyMap.has(id)) {
+        inBothRecords.push({
+          id: sup.id,
+          transactionId: sup.transactionId,
+          type: 'supply',
+          category: sup.category,
+          quantity: sup.quantity,
+          date: sup.date,
+          citizenOrDocument: sup.documentNumber
+        });
+      } else {
+        offlineOnlyRecords.push({
+          id: sup.id,
+          transactionId: sup.transactionId,
+          type: 'supply',
+          category: sup.category,
+          quantity: sup.quantity,
+          date: sup.date,
+          citizenOrDocument: sup.documentNumber
+        });
+      }
+    } else if (sup.syncStatus === 'pending') {
+      offlineOnlyRecords.push({
+        id: sup.id,
+        transactionId: sup.transactionId,
+        type: 'supply',
+        category: sup.category,
+        quantity: sup.quantity,
+        date: sup.date,
+        citizenOrDocument: sup.documentNumber
+      });
+    } else {
+      inBothRecords.push({
+        id: sup.id,
+        transactionId: sup.transactionId,
+        type: 'supply',
+        category: sup.category,
+        quantity: sup.quantity,
+        date: sup.date,
+        citizenOrDocument: sup.documentNumber
+      });
+    }
+  }
+
+  // Dispenses comparison
+  for (const [id, dsp] of localDispenseMap.entries()) {
+    if (serverDb) {
+      if (serverDispenseMap.has(id)) {
+        inBothRecords.push({
+          id: dsp.id,
+          transactionId: dsp.transactionId,
+          type: 'dispense',
+          category: dsp.category,
+          quantity: dsp.quantity,
+          date: dsp.date,
+          citizenOrDocument: dsp.citizenName
+        });
+      } else {
+        offlineOnlyRecords.push({
+          id: dsp.id,
+          transactionId: dsp.transactionId,
+          type: 'dispense',
+          category: dsp.category,
+          quantity: dsp.quantity,
+          date: dsp.date,
+          citizenOrDocument: dsp.citizenName
+        });
+      }
+    } else if (dsp.syncStatus === 'pending') {
+      offlineOnlyRecords.push({
+        id: dsp.id,
+        transactionId: dsp.transactionId,
+        type: 'dispense',
+        category: dsp.category,
+        quantity: dsp.quantity,
+        date: dsp.date,
+        citizenOrDocument: dsp.citizenName
+      });
+    } else {
+      inBothRecords.push({
+        id: dsp.id,
+        transactionId: dsp.transactionId,
+        type: 'dispense',
+        category: dsp.category,
+        quantity: dsp.quantity,
+        date: dsp.date,
+        citizenOrDocument: dsp.citizenName
+      });
+    }
+  }
+
+  // Online only records
+  if (serverDb) {
+    for (const [id, sup] of serverSupplyMap.entries()) {
+      if (!localSupplyMap.has(id)) {
+        onlineOnlyRecords.push({
+          id: sup.id,
+          transactionId: sup.transactionId,
+          type: 'supply',
+          category: sup.category,
+          quantity: sup.quantity,
+          date: sup.date,
+          citizenOrDocument: sup.documentNumber
+        });
+      }
+    }
+    for (const [id, dsp] of serverDispenseMap.entries()) {
+      if (!localDispenseMap.has(id)) {
+        onlineOnlyRecords.push({
+          id: dsp.id,
+          transactionId: dsp.transactionId,
+          type: 'dispense',
+          category: dsp.category,
+          quantity: dsp.quantity,
+          date: dsp.date,
+          citizenOrDocument: dsp.citizenName
+        });
+      }
+    }
+  }
+
+  // 2. Duplicates detection
+  const supplyTxCounts = new Map<string, string[]>();
+  for (const s of localDb.supplies || []) {
+    if (s.transactionId) {
+      const arr = supplyTxCounts.get(s.transactionId) || [];
+      arr.push(s.id);
+      supplyTxCounts.set(s.transactionId, arr);
+    }
+  }
+  const dispenseTxCounts = new Map<string, string[]>();
+  for (const d of localDb.dispenses || []) {
+    if (d.transactionId) {
+      const arr = dispenseTxCounts.get(d.transactionId) || [];
+      arr.push(d.id);
+      dispenseTxCounts.set(d.transactionId, arr);
+    }
+  }
+
+  const duplicates: { transactionId: string; count: number; type: string; recordIds: string[] }[] = [];
+  for (const [txId, ids] of supplyTxCounts.entries()) {
+    if (ids.length > 1) {
+      duplicates.push({ transactionId: txId, count: ids.length, type: 'supply', recordIds: ids });
+    }
+  }
+  for (const [txId, ids] of dispenseTxCounts.entries()) {
+    if (ids.length > 1) {
+      duplicates.push({ transactionId: txId, count: ids.length, type: 'dispense', recordIds: ids });
+    }
+  }
+
+  // 3. Tombstones
+  const tombstones = (localDb.tombstones || []).map(t => ({
+    recordId: t.recordId,
+    recordType: t.recordType,
+    deletedAt: t.deletedAt,
+    transactionId: t.transactionId
+  }));
+
+  // 4. Conflicts
+  const conflicts: { id: string; reason: string; details?: any }[] = [];
+  for (const log of (localDb.auditLogs || [])) {
+    if (log.action.includes('تعارض') || log.action.includes('CONFLICT') || (log.reason && log.reason.includes('conflict'))) {
+      conflicts.push({
+        id: log.id,
+        reason: log.details || log.action,
+        details: log
+      });
+    }
+  }
+
+  // 5. Demo / Seed candidates (classification only!)
+  const demoSeedCandidates = getSuspectedDemoRecords(localDb);
+
+  // 6. Invalid transactions
+  const invalidTransactions: { id: string; type: string; reason: string }[] = [];
+  for (const s of (localDb.supplies || [])) {
+    if (!s.transactionId) invalidTransactions.push({ id: s.id, type: 'supply', reason: 'معرف العملية transactionId مفقود' });
+    if (!s.date) invalidTransactions.push({ id: s.id, type: 'supply', reason: 'تاريخ التوريد مفقود' });
+    if (typeof s.quantity !== 'number' || s.quantity <= 0) invalidTransactions.push({ id: s.id, type: 'supply', reason: `كمية توريد غير صالحة (${s.quantity})` });
+  }
+  for (const d of (localDb.dispenses || [])) {
+    if (!d.transactionId) invalidTransactions.push({ id: d.id, type: 'dispense', reason: 'معرف العملية transactionId مفقود' });
+    if (!d.date) invalidTransactions.push({ id: d.id, type: 'dispense', reason: 'تاريخ الصرف مفقود' });
+    if (typeof d.quantity !== 'number' || d.quantity <= 0) invalidTransactions.push({ id: d.id, type: 'dispense', reason: `كمية صرف غير صالحة (${d.quantity})` });
+  }
+
+  // 7. Metadata discrepancies
+  const metadataDiscrepancies: { field: string; localValue: any; serverValue: any }[] = [];
+  if (serverDb) {
+    if (localDb.resetBoundary?.resetId !== serverDb.resetBoundary?.resetId) {
+      metadataDiscrepancies.push({
+        field: 'resetBoundary.resetId',
+        localValue: localDb.resetBoundary?.resetId,
+        serverValue: serverDb.resetBoundary?.resetId
+      });
+    }
+    if (localDb.version !== serverDb.version) {
+      metadataDiscrepancies.push({
+        field: 'version',
+        localValue: localDb.version,
+        serverValue: serverDb.version
+      });
+    }
+  }
+
+  // 8. Stock discrepancies (Diagnostic only - strictly does not change currentStock)
+  const fullCheck = runFullIntegrityCheck(localDb);
+  const stockDiscrepancies = fullCheck.categoryAudits
+    .filter(ca => !ca.isBalanced)
+    .map(ca => ({
+      category: ca.category,
+      categoryLabel: CATEGORY_LABELS[ca.category] || ca.category,
+      currentStock: ca.currentStock,
+      theoreticalStock: ca.theoreticalStock,
+      difference: ca.difference
+    }));
+
+  return {
+    timestamp: now,
+    isDiagnosticOnly: true,
+    offlineOnlyRecords,
+    onlineOnlyRecords,
+    inBothRecords,
+    duplicates,
+    tombstones,
+    conflicts,
+    demoSeedCandidates,
+    invalidTransactions,
+    metadataDiscrepancies,
+    stockDiscrepancies,
+    summary: {
+      totalOfflineOnly: offlineOnlyRecords.length,
+      totalOnlineOnly: onlineOnlyRecords.length,
+      totalInBoth: inBothRecords.length,
+      totalDuplicates: duplicates.length,
+      totalTombstones: tombstones.length,
+      totalDemoCandidates: demoSeedCandidates.length,
+      totalInvalidTransactions: invalidTransactions.length,
+      hasStockDiscrepancies: stockDiscrepancies.length > 0,
+      guarantee: 'التقرير تشخيصي رقابي بالكامل ولا يغير أي رصيد فعلي أو حركة حقيقية تلقائياً'
+    }
+  };
+}
+
 export interface DiagnosticResult {
   report: IntegrityReport;
   canSafelyPurgeDuplicates: boolean;

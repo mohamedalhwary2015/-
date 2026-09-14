@@ -67,7 +67,7 @@ function createServerEmptyDatabase(): DatabaseSchema {
     version: 1,
     lastUpdated: now,
     resetBoundary: {
-      resetId: `srv-rst-${Date.now().toString(36)}`,
+      resetId: `srv-rst-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`,
       resetTimestamp: now,
       resetBy: 'خادم مكتب صحة سفلاق المركزي'
     },
@@ -399,32 +399,66 @@ app.post('/api/sync/transactions', (req, res) => {
         case 'OPENING_BALANCE_SET': {
           const cat = payload.category as StockCategory;
           const qty = Number(payload.quantity) || 0;
-          serverDb.openingBalances[cat] = {
-            category: cat,
-            quantity: qty,
-            inventoryDate: payload.inventoryDate || new Date().toISOString().split('T')[0],
-            inventoryKeeper: payload.inventoryKeeper || 'غير محدد',
-            notes: payload.notes || ''
-          };
           const stock = serverDb.stocks[cat];
-          if (stock) {
-            stock.openingStock = qty;
-            if (stock.currentStock === 0 && stock.totalReceived === 0 && stock.totalDispensed === 0) {
-              stock.currentStock = qty;
+          const hasExistingMovements = Boolean(
+            stock && (
+              stock.totalReceived > 0 ||
+              stock.totalDispensed > 0 ||
+              serverDb.supplies.some(s => !s.isDeleted && s.category === cat) ||
+              serverDb.dispenses.some(d => !d.isDeleted && d.category === cat)
+            )
+          );
+          const existingOb = serverDb.openingBalances?.[cat];
+          const hasConflictingOb = Boolean(existingOb && existingOb.quantity !== qty && existingOb.quantity > 0);
+
+          if (hasConflictingOb) {
+            // Register conflict instead of silent overwrite (Rule 8)
+            serverDb.auditLogs.unshift({
+              id: `conflict-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              timestamp: new Date().toISOString(),
+              action: 'SYNC_CONFLICT',
+              category: cat,
+              details: `تعارض في تسجيل رصيد أول المدة للصنف (${cat}): القيمة الحالية المعتمدة (${existingOb?.quantity}) مقابل القيمة الواردة (${qty}). تم رفض الاستبدال الصامت.`,
+              performedBy: payload.inventoryKeeper || 'نظام المراقبة والمزامنة',
+              previousValue: existingOb?.quantity,
+              newValue: qty,
+              reason: 'تعارض رصيد أول مدة بين الأجهزة',
+              transactionId,
+              operationKey,
+              deviceId: payload.deviceId || deviceId || 'غير محدد',
+              operationType: 'OPENING_BALANCE_SET'
+            });
+          } else {
+            serverDb.openingBalances = serverDb.openingBalances || ({} as any);
+            serverDb.openingBalances[cat] = {
+              category: cat,
+              quantity: qty,
+              inventoryDate: payload.inventoryDate || new Date().toISOString().split('T')[0],
+              inventoryKeeper: payload.inventoryKeeper || 'غير محدد',
+              notes: payload.notes || ''
+            };
+            if (stock) {
+              stock.openingStock = qty;
+              // Rule 2: If there are genuine existing movements, DO NOT allow replacing currentStock!
+              if (!hasExistingMovements && stock.currentStock === 0 && stock.totalReceived === 0 && stock.totalDispensed === 0) {
+                stock.currentStock = qty;
+              }
+              stock.lastUpdated = new Date().toISOString();
             }
-            stock.lastUpdated = new Date().toISOString();
+            serverDb.auditLogs.unshift({
+              id: payload.id || `audit-${Date.now()}`,
+              timestamp: payload.timestamp || new Date().toISOString(),
+              action: 'تحديد رصيد أول المدة',
+              category: cat,
+              details: `اعتماد رصيد أول المدة للصنف بقيمة ${qty} بواسطة ${payload.inventoryKeeper || 'غير محدد'}`,
+              performedBy: payload.inventoryKeeper || 'غير محدد',
+              newValue: qty,
+              transactionId,
+              operationKey,
+              deviceId: payload.deviceId || deviceId || 'غير محدد',
+              operationType: 'OPENING_BALANCE_SET'
+            });
           }
-          serverDb.auditLogs.unshift({
-            id: payload.id || `audit-${Date.now()}`,
-            timestamp: payload.timestamp || new Date().toISOString(),
-            action: 'تحديد رصيد أول المدة',
-            category: cat,
-            details: `اعتماد رصيد أول المدة للصنف بقيمة ${qty} بواسطة ${payload.inventoryKeeper || 'غير محدد'}`,
-            performedBy: payload.inventoryKeeper || 'غير محدد',
-            newValue: qty,
-            transactionId,
-            operationType: 'OPENING_BALANCE_SET'
-          });
           modified = true;
           break;
         }
@@ -627,11 +661,22 @@ app.post('/api/sync/transactions', (req, res) => {
 });
 
 /**
- * Server Factory Reset (Rules 18 & 19)
+ * Server Factory Reset (Rules 18 & 19 - Full Wipe & Reset Boundary with Backup Snapshot)
  */
 app.post('/api/database/factory-reset', (req, res) => {
   try {
     const { performedBy } = req.body;
+
+    // Point 11 & 14: Save snapshot backup before factory reset
+    if (fs.existsSync(DB_FILE)) {
+      try {
+        const backupFile = path.join(DATA_DIR, `snapshot-backup-pre-reset-${Date.now()}.json`);
+        fs.copyFileSync(DB_FILE, backupFile);
+      } catch (backupErr) {
+        console.warn('Could not create backup snapshot before reset:', backupErr);
+      }
+    }
+
     const cleanDb = createServerEmptyDatabase();
     cleanDb.resetBoundary.resetBy = performedBy || 'مدير النظام';
     saveServerDb(cleanDb);
@@ -643,7 +688,7 @@ app.post('/api/database/factory-reset', (req, res) => {
 
     res.json({
       success: true,
-      message: 'تم تصفير الخادم وتأسيس حد أمان زمني جديد',
+      message: 'تم تصفير الخادم وتأسيس حد أمان زمني جديد مع حفظ نسخة احتياطية',
       resetBoundary: cleanDb.resetBoundary
     });
   } catch (err: any) {
