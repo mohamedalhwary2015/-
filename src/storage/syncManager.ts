@@ -533,6 +533,20 @@ export function mergeServerDataSafely(localDb: DatabaseSchema, serverData: Parti
   return localDb;
 }
 
+export function requireMatchingResetId(clientResetId: unknown, serverResetId: unknown): void {
+  if (
+    typeof clientResetId !== "string" ||
+    typeof serverResetId !== "string" ||
+    !clientResetId ||
+    !serverResetId ||
+    clientResetId !== serverResetId
+  ) {
+    const error = new Error("STALE_RESET_ID");
+    (error as any).code = "STALE_RESET_ID";
+    throw error;
+  }
+}
+
 /**
  * Non-destructive merge strictly protecting currentStock and validating resetId
  */
@@ -540,13 +554,10 @@ export function mergeDatabasesNonDestructive(
   serverDb: DatabaseSchema,
   clientDb: DatabaseSchema
 ): DatabaseSchema {
-  const serverResetId = serverDb.resetBoundary?.resetId || 'default';
-  const clientResetId = clientDb?.resetBoundary?.resetId;
-
-  // 1. Strict resetId check: Client with different resetId MUST be rejected
-  if (!clientResetId || clientResetId !== serverResetId) {
-    throw new Error(`STALE_RESET_ID: client resetId (${clientResetId}) does not match server resetId (${serverResetId})`);
-  }
+  requireMatchingResetId(
+    clientDb?.resetBoundary?.resetId,
+    serverDb?.resetBoundary?.resetId
+  );
 
   const merged: DatabaseSchema = JSON.parse(JSON.stringify(serverDb));
 

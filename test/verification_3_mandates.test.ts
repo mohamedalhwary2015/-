@@ -103,7 +103,11 @@ function simulateServerSync(serverDb: DatabaseSchema, body: any) {
 }
 
 // Simulates /api/sync/transactions endpoint in server.ts
-function simulateServerTransactions(serverDb: DatabaseSchema, body: any) {
+function simulateServerTransactions(
+  serverDb: DatabaseSchema,
+  body: any,
+  processedKeys: Set<string> = new Set()
+) {
   const { resetBoundary, transactions } = body || {};
   const serverResetId = serverDb.resetBoundary?.resetId || 'default';
   const clientResetId = resetBoundary?.resetId;
@@ -112,21 +116,59 @@ function simulateServerTransactions(serverDb: DatabaseSchema, body: any) {
     return {
       status: 409,
       data: {
+        ok: false,
         code: 'STALE_RESET_ID',
         error: 'STALE_RESET_ID',
-        message: 'STALE_RESET_ID: تم رفض المعاملات لعدم تطابق resetId',
+        message: 'Client resetId does not match server resetId. Refresh required.',
         serverResetId,
         serverBoundary: serverDb.resetBoundary
       }
     };
   }
 
+  const acknowledgedKeys: string[] = [];
+  for (const item of (transactions || [])) {
+    const opKey = item.operationKey;
+    if (typeof opKey !== 'string' || opKey.trim().length < 10) {
+      return {
+        status: 400,
+        data: {
+          ok: false,
+          code: 'INVALID_OPERATION_KEY',
+          message: 'A valid stable operationKey is required.'
+        }
+      };
+    }
+
+    if (processedKeys.has(opKey)) {
+      acknowledgedKeys.push(opKey);
+      continue;
+    }
+
+    // Apply movement to stock
+    if (item.operationType === 'SUPPLY_ADD' && item.payload) {
+      const cat = item.payload.category as StockCategory;
+      if (cat && serverDb.stocks[cat]) {
+        serverDb.stocks[cat].currentStock += Number(item.payload.quantity || 0);
+      }
+    } else if (item.operationType === 'DISPENSE_ADD' && item.payload) {
+      const cat = item.payload.category as StockCategory;
+      if (cat && serverDb.stocks[cat]) {
+        serverDb.stocks[cat].currentStock -= Number(item.payload.quantity || 0);
+      }
+    }
+
+    processedKeys.add(opKey);
+    acknowledgedKeys.push(opKey);
+  }
+
   return {
     status: 200,
     data: {
+      ok: true,
       success: true,
       serverResetId,
-      processedKeys: (transactions || []).map((t: any) => t.operationKey)
+      processedKeys: acknowledgedKeys
     }
   };
 }
@@ -135,63 +177,54 @@ function simulateServerTransactions(serverDb: DatabaseSchema, body: any) {
 function simulateServerRepairApply(serverDb: DatabaseSchema, body: any) {
   const { cleanDb, explicitApproval } = body || {};
   if (!cleanDb || typeof cleanDb !== 'object') {
-    return { status: 400, data: { code: 'INVALID_REPAIR_PAYLOAD' } };
+    return { status: 400, data: { ok: false, code: 'INVALID_REPAIR_PAYLOAD' } };
   }
 
-  const serverResetId = serverDb.resetBoundary?.resetId || 'default';
-  if (!cleanDb.resetBoundary?.resetId || cleanDb.resetBoundary.resetId !== serverResetId) {
+  const serverResetId = serverDb.resetBoundary?.resetId;
+  const clientResetId = cleanDb.resetBoundary?.resetId;
+  if (!clientResetId || clientResetId !== serverResetId) {
     return {
       status: 409,
       data: {
+        ok: false,
         code: 'STALE_RESET_ID',
         error: 'STALE_RESET_ID'
       }
     };
   }
 
-  // Stock protection check
-  const categories: StockCategory[] = [
-    'birth_certificates',
-    'death_certificates',
-    'health_cards_male',
-    'health_cards_female'
-  ];
-  const stockViolations: string[] = [];
-  for (const cat of categories) {
-    const serverCurrent = serverDb.stocks[cat]?.currentStock ?? 0;
-    const cleanCurrent = cleanDb.stocks?.[cat]?.currentStock ?? 0;
-    if (serverCurrent !== cleanCurrent) {
-      stockViolations.push(`صنف ${cat}: رصيد الخادم (${serverCurrent}) مقابل المطلوب (${cleanCurrent})`);
+  const incomingStocks = cleanDb?.stocks ?? {};
+  const currentStocks = serverDb?.stocks ?? {};
+
+  for (const category of Object.keys(currentStocks)) {
+    const currentStock = Number((currentStocks as any)[category]?.currentStock ?? 0);
+    const incomingStock = Number(incomingStocks[category]?.currentStock ?? 0);
+
+    if (currentStock !== incomingStock) {
+      return {
+        status: 409,
+        data: {
+          ok: false,
+          code: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL',
+          error: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL',
+          message: 'Repair cannot modify currentStock.'
+        }
+      };
     }
   }
 
-  if (stockViolations.length > 0) {
-    return {
-      status: 400,
-      data: {
-        code: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL',
-        error: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL',
-        message: 'لا يجوز لعملية الإصلاح تعديل currentStock تلقائياً',
-        stockViolations
-      }
-    };
-  }
-
-  if (!explicitApproval) {
-    return {
-      status: 400,
-      data: {
-        code: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL',
-        error: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL'
-      }
-    };
-  }
+  cleanDb.stocks = serverDb.stocks;
+  cleanDb.supplies = serverDb.supplies;
+  cleanDb.dispenses = serverDb.dispenses;
+  cleanDb.lateRegistrations = serverDb.lateRegistrations;
+  cleanDb.tombstones = serverDb.tombstones;
 
   return {
     status: 200,
     data: {
+      ok: true,
       success: true,
-      message: 'تم تطبيق الإصلاح'
+      message: 'تم تطبيق تقرير الإصلاح المعتمد بأمان تام'
     }
   };
 }
@@ -202,7 +235,7 @@ describe('التحقق الإلزامي من الإصلاحات الثلاثة �
     saveDatabase(createEmptyDatabase(), false);
   });
 
-  // الاختبار 1: نفس resetId → PASS
+  // الاختبار 1: نفس resetId → PASS.
   test('1. نفس resetId → PASS', () => {
     const activeResetId = 'reset-cycle-2026-A';
     const serverDb = createMockServerDb(activeResetId);
@@ -220,21 +253,21 @@ describe('التحقق الإلزامي من الإصلاحات الثلاثة �
     // فحص حركات المعاملات /api/sync/transactions
     const txRes = simulateServerTransactions(serverDb, {
       resetBoundary: clientDb.resetBoundary,
-      transactions: [{ operationKey: 'SUPPLY_ADD:sup-1:1' }]
+      transactions: [{ operationKey: 'SUPPLY_ADD:sup-valid-100:1' }]
     });
     assert.strictEqual(txRes.status, 200, 'يجب أن تقبل المعاملات عند تطابق resetId');
     assert.strictEqual(txRes.data.success, true);
   });
 
-  // الاختبار 2: resetId قديم → STALE_RESET_ID ولا يحدث أي تغيير
-  test('2. resetId قديم → STALE_RESET_ID ولا يحدث أي تغيير', () => {
+  // الاختبار 2: resetId مختلف → STALE_RESET_ID وبدون أي تغيير.
+  test('2. resetId مختلف → STALE_RESET_ID وبدون أي تغيير', () => {
     const currentServerResetId = 'reset-cycle-SERVER-NEW';
     const oldClientResetId = 'reset-cycle-CLIENT-STALE';
     
     const serverDb = createMockServerDb(currentServerResetId);
     const initialServerStock = serverDb.stocks.health_cards_male.currentStock;
 
-    // جهاز عميل يحمل resetId قديماً ويحاول إرسال رصيد أو حركات
+    // جهاز عميل يحمل resetId مختلفاً ويحاول إرسال رصيد أو حركات
     const staleClientDb = JSON.parse(JSON.stringify(serverDb));
     staleClientDb.resetBoundary = { resetId: oldClientResetId, resetAt: new Date().toISOString(), resetBy: 'مستخدم قديم' };
     staleClientDb.stocks.health_cards_male.currentStock = 999; // محاولة تغيير
@@ -244,7 +277,7 @@ describe('التحقق الإلزامي من الإصلاحات الثلاثة �
       () => {
         mergeDatabasesNonDestructive(serverDb, staleClientDb);
       },
-      (err: any) => err.message.includes('STALE_RESET_ID'),
+      (err: any) => err.message.includes('STALE_RESET_ID') || err.code === 'STALE_RESET_ID',
       'يجب أن ترفض mergeDatabasesNonDestructive أي دمج لـ resetId مختلف بـ STALE_RESET_ID'
     );
 
@@ -253,12 +286,12 @@ describe('التحقق الإلزامي من الإصلاحات الثلاثة �
     assert.strictEqual(syncRes.status, 409, 'يجب إرجاع كود 409 عند اختلاف resetId');
     assert.strictEqual(syncRes.data.code, 'STALE_RESET_ID');
 
-    // 3. التحقق القاطع أن رصيد الخادم لم يتغير إطلاقاً
+    // 3. التحقق القاطع أن رصيد الخادم لم يتغير إطلاقاً وبدون أي تغيير
     assert.strictEqual(serverDb.stocks.health_cards_male.currentStock, initialServerStock);
   });
 
-  // الاختبار 3: جهاز Offline قديم بعد Factory Reset → مرفوض ولا يستطيع إعادة بيانات قديمة
-  test('3. جهاز Offline قديم بعد Factory Reset → مرفوض ولا يستطيع إعادة بيانات قديمة', () => {
+  // الاختبار 3: جهاز Offline قديم → مرفوض.
+  test('3. جهاز Offline قديم → مرفوض', () => {
     // الخادم أجرى Factory Reset وانتقل لدورة جديدة
     const postResetId = 'reset-id-after-factory-reset-999';
     const serverDb = createMockServerDb(postResetId);
@@ -288,8 +321,81 @@ describe('التحقق الإلزامي من الإصلاحات الثلاثة �
     assert.strictEqual(serverDb.dispenses.length, 0, 'لا يمكن إعادة أي صرف قديم');
   });
 
-  // الاختبار 4: Repair مع وجود فرق حسابي → لا يغيّر currentStock
-  test('4. Repair مع وجود فرق حسابي → لا يغيّر currentStock', () => {
+  // الاختبار 4: operationKey مفقود → INVALID_OPERATION_KEY.
+  test('4. operationKey مفقود → INVALID_OPERATION_KEY', () => {
+    const serverResetId = 'active-reset-session-1';
+    const serverDb = createMockServerDb(serverResetId);
+
+    // إرسال حركة بدون operationKey أو بقيمة غير صالحة (< 10 أحرف)
+    const txMissingRes = simulateServerTransactions(serverDb, {
+      resetBoundary: { resetId: serverResetId },
+      transactions: [{ operationType: 'SUPPLY_ADD', payload: { quantity: 10 } }] // operationKey مفقود
+    });
+
+    assert.strictEqual(txMissingRes.status, 400);
+    assert.strictEqual(txMissingRes.data.code, 'INVALID_OPERATION_KEY');
+
+    // اختبار قيمة قصيرة أقل من 10 محارف
+    const txShortRes = simulateServerTransactions(serverDb, {
+      resetBoundary: { resetId: serverResetId },
+      transactions: [{ operationKey: 'SHORT', operationType: 'SUPPLY_ADD', payload: { quantity: 10 } }]
+    });
+
+    assert.strictEqual(txShortRes.status, 400);
+    assert.strictEqual(txShortRes.data.code, 'INVALID_OPERATION_KEY');
+  });
+
+  // الاختبار 5: نفس operationKey مرتين → تنفيذ مرة واحدة فقط.
+  test('5. نفس operationKey مرتين → تنفيذ مرة واحدة فقط', () => {
+    const serverResetId = 'active-reset-session-idempotency';
+    const serverDb = createMockServerDb(serverResetId);
+    const processedKeys = new Set<string>();
+
+    const initialStock = serverDb.stocks.health_cards_male.currentStock; // 100
+    const stableOpKey = 'SUPPLY_ADD:sup-rec-12345:1';
+
+    // الإرسال الأول: إضافة توريد 50
+    const firstRes = simulateServerTransactions(
+      serverDb,
+      {
+        resetBoundary: { resetId: serverResetId },
+        transactions: [
+          {
+            operationKey: stableOpKey,
+            operationType: 'SUPPLY_ADD',
+            payload: { category: 'health_cards_male', quantity: 50 }
+          }
+        ]
+      },
+      processedKeys
+    );
+
+    assert.strictEqual(firstRes.status, 200);
+    assert.strictEqual(serverDb.stocks.health_cards_male.currentStock, initialStock + 50);
+
+    // الإرسال الثاني بنفس الـ operationKey
+    const duplicateRes = simulateServerTransactions(
+      serverDb,
+      {
+        resetBoundary: { resetId: serverResetId },
+        transactions: [
+          {
+            operationKey: stableOpKey,
+            operationType: 'SUPPLY_ADD',
+            payload: { category: 'health_cards_male', quantity: 50 }
+          }
+        ]
+      },
+      processedKeys
+    );
+
+    assert.strictEqual(duplicateRes.status, 200);
+    // التحقق الصارم من أن الرصيد تم تنفيذه مرة واحدة فقط (150 وليس 200)
+    assert.strictEqual(serverDb.stocks.health_cards_male.currentStock, initialStock + 50);
+  });
+
+  // الاختبار 6: Repair مع اختلاف حسابي في الرصيد → لا يغيّر currentStock.
+  test('6. Repair مع اختلاف حسابي في الرصيد → لا يغيّر currentStock', () => {
     const db = loadDatabase();
     // تعيين رصيد فعلي 50
     db.stocks.birth_certificates.currentStock = 50;
@@ -314,8 +420,8 @@ describe('التحقق الإلزامي من الإصلاحات الثلاثة �
     assert.strictEqual(dbAfter.stocks.birth_certificates.currentStock, 50, 'currentStock لا يمسه الـ Repair أبداً');
   });
 
-  // الاختبار 5: Repair Apply يحاول تغيير الرصيد → مرفوض
-  test('5. Repair Apply يحاول تغيير الرصيد → مرفوض', () => {
+  // الاختبار 7: Repair يحاول تغيير currentStock → REPAIR_REQUIRES_EXPLICIT_APPROVAL.
+  test('7. Repair يحاول تغيير currentStock → REPAIR_REQUIRES_EXPLICIT_APPROVAL', () => {
     const serverDb = createMockServerDb('server-repair-check-id');
     const realStock = serverDb.stocks.birth_certificates.currentStock; // 100
 
@@ -329,16 +435,15 @@ describe('التحقق الإلزامي من الإصلاحات الثلاثة �
     });
 
     // يجب رفض الطلب فوراً برمز REPAIR_REQUIRES_EXPLICIT_APPROVAL
-    assert.strictEqual(applyRes.status, 400);
+    assert.strictEqual(applyRes.status, 409);
     assert.strictEqual(applyRes.data.code, 'REPAIR_REQUIRES_EXPLICIT_APPROVAL');
-    assert.ok(applyRes.data.stockViolations && applyRes.data.stockViolations.length > 0, 'يجب توثيق مخالفة الرصيد');
 
     // التأكد من بقاء رصيد الخادم كما هو
     assert.strictEqual(serverDb.stocks.birth_certificates.currentStock, realStock);
   });
 
-  // الاختبار 6: Factory Reset ينشئ resetId جديدًا، والـ resetId القديم يُرفض
-  test('6. Factory Reset ينشئ resetId جديدًا، والـ resetId القديم يُرفض', () => {
+  // الاختبار 8: Factory Reset → إنشاء resetId جديد ورفض الأجهزة القديمة.
+  test('8. Factory Reset → إنشاء resetId جديد ورفض الأجهزة القديمة', () => {
     const initialResetId = 'reset-cycle-phase-1';
     let serverDb = createMockServerDb(initialResetId);
 

@@ -203,25 +203,44 @@ app.get('/api/database', (req, res) => {
   res.json(db);
 });
 
+export function requireMatchingResetId(clientResetId: unknown, serverResetId: unknown): void {
+  if (
+    typeof clientResetId !== "string" ||
+    typeof serverResetId !== "string" ||
+    !clientResetId ||
+    !serverResetId ||
+    clientResetId !== serverResetId
+  ) {
+    const error = new Error("STALE_RESET_ID");
+    (error as any).code = "STALE_RESET_ID";
+    throw error;
+  }
+}
+
 /**
  * Transaction Sync Endpoint (Rules 10, 11, 12, 14, 15, 16, 19)
  */
 app.post('/api/sync/transactions', (req, res) => {
   try {
-    const { deviceId, resetBoundary, transactions } = req.body;
+    const { deviceId, resetBoundary, transactions } = req.body || {};
     const serverDb = loadServerDb();
     const processedKeys = loadProcessedKeys();
     const acknowledgedKeys: string[] = [];
 
     // 1. Strict Reset Boundary Check (Point 1: Server is ultimate source of truth, no old device queue accepted)
-    const serverResetId = serverDb.resetBoundary?.resetId || 'default';
-    const clientResetId = resetBoundary?.resetId;
-    if (!clientResetId || clientResetId !== serverResetId) {
+    const serverResetId = serverDb.resetBoundary?.resetId;
+
+    try {
+      requireMatchingResetId(
+        req.body?.resetId ?? req.body?.resetBoundary?.resetId ?? req.body?.clientDb?.resetBoundary?.resetId,
+        serverResetId
+      );
+    } catch (err: any) {
       return res.status(409).json({
-        code: 'STALE_RESET_ID',
-        error: 'STALE_RESET_ID',
-        legacyCode: 'RESET_BOUNDARY_VIOLATION',
-        message: 'STALE_RESET_ID: تم تصفير النظام مركزياً أو عدم تطابق معرف دورة التصفير. الحركات المتبقية من الجلسة السابقة مرفوضة.',
+        ok: false,
+        code: "STALE_RESET_ID",
+        error: "STALE_RESET_ID",
+        message: "Client resetId does not match server resetId. Refresh required.",
         serverResetId,
         serverBoundary: serverDb.resetBoundary
       });
@@ -229,6 +248,7 @@ app.post('/api/sync/transactions', (req, res) => {
 
     if (!Array.isArray(transactions) || transactions.length === 0) {
       return res.json({
+        ok: true,
         success: true,
         processedKeys: [],
         serverData: serverDb
@@ -252,7 +272,6 @@ app.post('/api/sync/transactions', (req, res) => {
 
       const {
         transactionId,
-        operationKey,
         recordId,
         operationType,
         version,
@@ -266,13 +285,20 @@ app.post('/api/sync/transactions', (req, res) => {
       if (!transactionId || typeof transactionId !== 'string' || !transactionId.trim()) {
         return res.status(400).json({ error: 'معرف الحركة transactionId مفقود أو غير صالح', item });
       }
-      if (!operationKey || typeof operationKey !== 'string' || !operationKey.trim()) {
+
+      const opKey = item.operationKey;
+
+      if (
+        typeof opKey !== "string" ||
+        opKey.trim().length < 10
+      ) {
         return res.status(400).json({
-          code: 'INVALID_OPERATION_KEY',
-          error: 'INVALID_OPERATION_KEY: مفتاح العملية operationKey مفقود أو غير صالح',
-          item
+          ok: false,
+          code: "INVALID_OPERATION_KEY",
+          message: "A valid stable operationKey is required."
         });
       }
+
       if (!recordId || typeof recordId !== 'string' || !recordId.trim()) {
         return res.status(400).json({ error: 'معرف السجل recordId مفقود أو غير صالح', item });
       }
@@ -293,24 +319,26 @@ app.post('/api/sync/transactions', (req, res) => {
 
       // Format check: operationKey format must start with ${operationType}:${recordId}
       const expectedPrefix = `${operationType}:${recordId}`;
-      if (!operationKey.startsWith(expectedPrefix)) {
+      if (!opKey.startsWith(expectedPrefix)) {
         return res.status(400).json({ error: 'صيغة مفتاح العملية operationKey غير متطابقة مع بيانات الحركة', item });
       }
 
       // No duplicate operationKey in the same batch
-      if (seenBatchKeys.has(operationKey)) {
+      if (seenBatchKeys.has(opKey)) {
         return res.status(400).json({ error: 'تكرار مفتاح العملية داخل نفس الحزمة المرسلة', item });
       }
-      seenBatchKeys.add(operationKey);
+      seenBatchKeys.add(opKey);
 
       // Reset Boundary check on transaction item level
-      const effectiveItemResetId = itemResetBoundary?.resetId || resetBoundary?.resetId;
-      if (!effectiveItemResetId || effectiveItemResetId !== serverResetId) {
+      const effectiveItemResetId = itemResetBoundary?.resetId || resetBoundary?.resetId || req.body?.resetId;
+      try {
+        requireMatchingResetId(effectiveItemResetId, serverResetId);
+      } catch (err: any) {
         return res.status(409).json({
-          code: 'STALE_RESET_ID',
-          error: 'STALE_RESET_ID',
-          legacyCode: 'RESET_BOUNDARY_VIOLATION',
-          message: 'STALE_RESET_ID: تم تصفير النظام مركزياً أو عدم تطابق معرف دورة التصفير. الحركات المتبقية من الجلسة السابقة مرفوضة.',
+          ok: false,
+          code: "STALE_RESET_ID",
+          error: "STALE_RESET_ID",
+          message: "Client resetId does not match server resetId. Refresh required.",
           serverResetId,
           serverBoundary: serverDb.resetBoundary
         });
@@ -735,12 +763,10 @@ function mergeDatabasesNonDestructive(
   serverDb: DatabaseSchema,
   clientDb: DatabaseSchema
 ): DatabaseSchema {
-  const serverResetId = serverDb.resetBoundary?.resetId || 'default';
-  const clientResetId = clientDb?.resetBoundary?.resetId;
-
-  if (!clientResetId || clientResetId !== serverResetId) {
-    throw new Error(`STALE_RESET_ID: client resetId (${clientResetId}) does not match server resetId (${serverResetId})`);
-  }
+  requireMatchingResetId(
+    clientDb?.resetBoundary?.resetId,
+    serverDb?.resetBoundary?.resetId
+  );
 
   const merged: DatabaseSchema = JSON.parse(JSON.stringify(serverDb));
 
@@ -807,15 +833,19 @@ app.post('/api/sync', (req, res) => {
   try {
     const { clientDb, resetBoundary, deviceId } = req.body || {};
     const serverDb = loadServerDb();
-    const serverResetId = serverDb.resetBoundary?.resetId || 'default';
-    const clientResetId = clientDb?.resetBoundary?.resetId || resetBoundary?.resetId;
+    const serverResetId = serverDb.resetBoundary?.resetId;
 
-    // 1. Strict resetId validation: Client resetId MUST equal server resetId
-    if (!clientResetId || clientResetId !== serverResetId) {
+    try {
+      requireMatchingResetId(
+        req.body?.resetId ?? req.body?.clientDb?.resetBoundary?.resetId ?? resetBoundary?.resetId,
+        serverResetId
+      );
+    } catch (err: any) {
       return res.status(409).json({
-        code: 'STALE_RESET_ID',
-        error: 'STALE_RESET_ID',
-        message: 'STALE_RESET_ID: تم رفض المزامنة لعدم تطابق معرف دورة قاعدة البيانات resetId',
+        ok: false,
+        code: "STALE_RESET_ID",
+        error: "STALE_RESET_ID",
+        message: "Client resetId does not match server resetId. Refresh required.",
         serverResetId,
         serverBoundary: serverDb.resetBoundary
       });
@@ -827,6 +857,7 @@ app.post('/api/sync', (req, res) => {
       const merged = mergeDatabasesNonDestructive(serverDb, clientDb);
       saveServerDb(merged);
       return res.json({
+        ok: true,
         success: true,
         serverResetId,
         serverData: merged
@@ -834,17 +865,19 @@ app.post('/api/sync', (req, res) => {
     }
 
     return res.json({
+      ok: true,
       success: true,
       serverResetId,
       serverData: serverDb
     });
   } catch (err: any) {
-    if (err?.message?.includes('STALE_RESET_ID')) {
+    if (err?.message?.includes('STALE_RESET_ID') || err?.code === 'STALE_RESET_ID') {
       const serverDb = loadServerDb();
       return res.status(409).json({
-        code: 'STALE_RESET_ID',
-        error: 'STALE_RESET_ID',
-        message: err.message,
+        ok: false,
+        code: "STALE_RESET_ID",
+        error: "STALE_RESET_ID",
+        message: "Client resetId does not match server resetId. Refresh required.",
         serverResetId: serverDb.resetBoundary?.resetId,
         serverBoundary: serverDb.resetBoundary
       });
@@ -860,25 +893,42 @@ app.post('/api/sync/changes', (req, res) => {
   try {
     const { resetBoundary, resetId, changes, deviceId } = req.body || {};
     const serverDb = loadServerDb();
-    const serverResetId = serverDb.resetBoundary?.resetId || 'default';
-    const clientResetId = resetId || resetBoundary?.resetId;
+    const serverResetId = serverDb.resetBoundary?.resetId;
 
-    if (!clientResetId || clientResetId !== serverResetId) {
+    try {
+      requireMatchingResetId(
+        req.body?.resetId ?? req.body?.clientDb?.resetBoundary?.resetId ?? resetBoundary?.resetId,
+        serverResetId
+      );
+    } catch (err: any) {
       return res.status(409).json({
-        code: 'STALE_RESET_ID',
-        error: 'STALE_RESET_ID',
-        message: 'STALE_RESET_ID: تم رفض التغييرات لعدم تطابق معرف دورة التصفير resetId',
+        ok: false,
+        code: "STALE_RESET_ID",
+        error: "STALE_RESET_ID",
+        message: "Client resetId does not match server resetId. Refresh required.",
         serverResetId,
         serverBoundary: serverDb.resetBoundary
       });
     }
 
     res.json({
+      ok: true,
       success: true,
       serverResetId,
       serverData: serverDb
     });
   } catch (err: any) {
+    if (err?.message?.includes('STALE_RESET_ID') || err?.code === 'STALE_RESET_ID') {
+      const serverDb = loadServerDb();
+      return res.status(409).json({
+        ok: false,
+        code: "STALE_RESET_ID",
+        error: "STALE_RESET_ID",
+        message: "Client resetId does not match server resetId. Refresh required.",
+        serverResetId: serverDb.resetBoundary?.resetId,
+        serverBoundary: serverDb.resetBoundary
+      });
+    }
     res.status(500).json({ error: err?.message || 'خطأ في معالجة التغييرات' });
   }
 });
@@ -923,103 +973,64 @@ app.post('/api/database/factory-reset', (req, res) => {
  * Controlled Production Repair Apply Endpoint (Rule 9)
  * STRICT MANDATES:
  * - NEVER allows cleanDb to overwrite currentStock or recalculate balances.
- * - NEVER allows dropping real supplies or dispenses without verified tombstones.
- * - Enforces resetId consistency.
- * - Rejects any attempt to mutate operational balances with REPAIR_REQUIRES_EXPLICIT_APPROVAL.
+ * - Enforces resetId consistency via requireMatchingResetId.
+ * - Protects operational data: stocks, supplies, dispenses, lateRegistrations, tombstones.
  */
 app.post('/api/repair/apply', (req, res) => {
   try {
-    const { cleanDb, explicitApproval, operatorName } = req.body;
+    const { cleanDb, explicitApproval, operatorName } = req.body || {};
     if (!cleanDb || typeof cleanDb !== 'object') {
       return res.status(400).json({
+        ok: false,
         code: 'INVALID_REPAIR_PAYLOAD',
         error: 'بيانات الإصلاح غير صالحة'
       });
     }
 
-    const serverDb = loadServerDb();
+    const loadDatabaseFromDisk = loadServerDb;
+    const saveDatabaseToDisk = saveServerDb;
 
-    // 1. Check resetId
-    const serverResetId = serverDb.resetBoundary?.resetId || 'default';
-    if (!cleanDb.resetBoundary?.resetId || cleanDb.resetBoundary.resetId !== serverResetId) {
+    const currentDb = loadDatabaseFromDisk();
+    const serverResetId = currentDb.resetBoundary?.resetId;
+
+    try {
+      requireMatchingResetId(
+        cleanDb?.resetBoundary?.resetId,
+        serverResetId
+      );
+    } catch (err: any) {
       return res.status(409).json({
-        code: 'STALE_RESET_ID',
-        error: 'STALE_RESET_ID',
-        message: 'STALE_RESET_ID: معرف التصفير غير متطابق مع الخادم المركزي',
+        ok: false,
+        code: "STALE_RESET_ID",
+        error: "STALE_RESET_ID",
+        message: "Client resetId does not match server resetId. Refresh required.",
         serverResetId,
-        serverBoundary: serverDb.resetBoundary
+        serverBoundary: currentDb.resetBoundary
       });
     }
 
-    // 2. Check currentStock protection (Rule 1, 2, 9)
-    const stockViolations: string[] = [];
-    for (const cat of STOCK_CATEGORIES) {
-      const serverCurrent = serverDb.stocks[cat]?.currentStock ?? 0;
-      const cleanCurrent = cleanDb.stocks?.[cat]?.currentStock ?? 0;
-      if (serverCurrent !== cleanCurrent) {
-        stockViolations.push(`صنف ${cat}: رصيد الخادم (${serverCurrent}) مقابل المطلوب تطبيقه (${cleanCurrent})`);
+    const incomingStocks = cleanDb?.stocks ?? {};
+    const currentStocks = currentDb?.stocks ?? {};
+
+    for (const category of Object.keys(currentStocks)) {
+      const currentStock = Number((currentStocks as any)[category]?.currentStock ?? 0);
+      const incomingStock = Number(incomingStocks[category]?.currentStock ?? 0);
+
+      if (currentStock !== incomingStock) {
+        return res.status(409).json({
+          ok: false,
+          code: "REPAIR_REQUIRES_EXPLICIT_APPROVAL",
+          error: "REPAIR_REQUIRES_EXPLICIT_APPROVAL",
+          message: "Repair cannot modify currentStock."
+        });
       }
     }
 
-    if (stockViolations.length > 0) {
-      return res.status(400).json({
-        code: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL',
-        error: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL',
-        message: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL: لا يجوز لعملية الإصلاح تعديل currentStock تلقائياً. تعديل الرصيد يتطلب تسوية جرد يدوية صريحة.',
-        stockViolations
-      });
-    }
-
-    // 3. Check supplies protection: real supplies must not be dropped without tombstones
-    const cleanSupplyMap = new Map((cleanDb.supplies || []).map((s: any) => [s.id, s]));
-    const cleanTombstones = new Set((cleanDb.tombstones || []).map((t: any) => t.recordId));
-    const supplyViolations: string[] = [];
-
-    for (const s of serverDb.supplies || []) {
-      if (s.isDeleted) continue;
-      const cleanSup: any = cleanSupplyMap.get(s.id);
-      if (!cleanSup && !cleanTombstones.has(s.id)) {
-        supplyViolations.push(`توريد حقيقي مفقود دون شاهد حذف: ${s.id} (${s.documentNumber})`);
-      } else if (cleanSup) {
-        if (cleanSup.quantity !== s.quantity || cleanSup.category !== s.category) {
-          supplyViolations.push(`تعديل غير مصرح به لكمية أو صنف التوريد الحقيقي: ${s.id}`);
-        }
-      }
-    }
-
-    // 4. Check dispenses protection: real dispenses must not be dropped without tombstones
-    const cleanDispenseMap = new Map((cleanDb.dispenses || []).map((d: any) => [d.id, d]));
-    const dispenseViolations: string[] = [];
-
-    for (const d of serverDb.dispenses || []) {
-      if (d.isDeleted) continue;
-      const cleanDsp: any = cleanDispenseMap.get(d.id);
-      if (!cleanDsp && !cleanTombstones.has(d.id)) {
-        dispenseViolations.push(`صرف حقيقي مفقود دون شاهد حذف: ${d.id} (${d.citizenName})`);
-      } else if (cleanDsp) {
-        if (cleanDsp.quantity !== d.quantity || cleanDsp.category !== d.category) {
-          dispenseViolations.push(`تعديل غير مصرح به لكمية أو صنف المنصرف الحقيقي: ${d.id}`);
-        }
-      }
-    }
-
-    if (supplyViolations.length > 0 || dispenseViolations.length > 0) {
-      return res.status(400).json({
-        code: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL',
-        error: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL',
-        message: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL: لا يمكن حذف أو تعديل حركات حقيقية تلقائياً عبر Repair Apply.',
-        supplyViolations,
-        dispenseViolations
-      });
-    }
-
-    if (!explicitApproval) {
-      return res.status(400).json({
-        code: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL',
-        error: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL',
-        message: 'REPAIR_REQUIRES_EXPLICIT_APPROVAL: تطبيق الإصلاح يتطلب موافقة صريحة ومحددة من المشغل'
-      });
-    }
+    cleanDb.stocks = currentDb.stocks;
+    cleanDb.supplies = currentDb.supplies;
+    cleanDb.dispenses = currentDb.dispenses;
+    cleanDb.lateRegistrations = currentDb.lateRegistrations;
+    cleanDb.tombstones = currentDb.tombstones;
 
     // Backup current DB before applying verified repair
     if (fs.existsSync(DB_FILE)) {
@@ -1031,14 +1042,15 @@ app.post('/api/repair/apply', (req, res) => {
       }
     }
 
-    saveServerDb(cleanDb);
+    saveDatabaseToDisk(cleanDb);
 
     return res.json({
+      ok: true,
       success: true,
       message: 'تم تطبيق تقرير الإصلاح المعتمد بأمان تام ودون المساس بالأرصدة أو الحركات الحقيقية'
     });
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ ok: false, error: err?.message || 'خطأ في معالجة طلب الإصلاح' });
   }
 });
 
