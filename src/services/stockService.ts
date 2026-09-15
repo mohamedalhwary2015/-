@@ -50,14 +50,16 @@ export function calculateTheoreticalStockForCategory(
   const openingStock = Number(stock.openingStock) || 0;
 
   // 1. Sum verified active supplies
-  const totalReceived = (db.supplies || [])
+  const suppliesSum = (db.supplies || [])
     .filter(s => !s.isDeleted && s.category === category)
     .reduce((sum, s) => sum + (Number(s.quantity) || 0), 0);
+  const totalReceived = suppliesSum > 0 ? suppliesSum : (Number(stock.totalReceived) || 0);
 
   // 2. Sum verified active dispenses
-  const totalDispensed = (db.dispenses || [])
+  const dispensesSum = (db.dispenses || [])
     .filter(d => !d.isDeleted && d.category === category)
     .reduce((sum, d) => sum + (Number(d.quantity) || 0), 0);
+  const totalDispensed = dispensesSum > 0 ? dispensesSum : (Number(stock.totalDispensed) || 0);
 
   const damagedOrCancelled = Number(stock.damagedOrCancelled) || 0;
 

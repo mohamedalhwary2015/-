@@ -107,7 +107,8 @@ export interface ProductionRepairDiagnosticReport {
  */
 export function executeProductionRepair(
   localDb: DatabaseSchema,
-  serverDb?: DatabaseSchema
+  serverDb?: DatabaseSchema,
+  operatorName?: string
 ): ProductionRepairDiagnosticReport {
   const now = new Date().toISOString();
 
@@ -619,3 +620,5 @@ export function purgeSingleSuspectedRecord(
   saveDatabase(db);
   return { success: true, message: 'تم حذف السجل بنجاح مع توثيق العملية بالكامل ومزامنتها' };
 }
+
+export const executeDiagnosticIntegrityCheck = diagnoseDatabase;

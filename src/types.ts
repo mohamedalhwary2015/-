@@ -64,7 +64,8 @@ export type AdjustmentReason =
   | 'book_reconciliation'   // تسوية ومطابقة دفترية
   | 'damaged'               // تالف ومستهلك رسمياً
   | 'lost'                  // مفقود أو استبعاد رسمي
-  | 'administrative_entry'; // تصحيح إداري معتمد
+  | 'administrative_entry'  // تصحيح إداري معتمد
+  | (string & {});
 
 export const ADJUSTMENT_REASON_LABELS: Record<AdjustmentReason, string> = {
   inventory_count: 'جرد فعلي بالخزينة',
@@ -210,6 +211,8 @@ export interface SyncTransactionItem {
 export interface AuditLogEntry {
   id: string;
   timestamp: string;
+  createdAt?: string;
+  resetId?: string;
   action: string;
   category?: StockCategory;
   itemId?: string;

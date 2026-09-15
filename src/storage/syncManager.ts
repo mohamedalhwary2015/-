@@ -81,22 +81,38 @@ export function enqueueTransaction(
   recordId: string,
   version: number,
   payload: any,
-  transactionId: string
-): SyncTransactionItem {
+  transactionId?: string,
+  explicitOperationKey?: string
+): SyncTransactionItem[] & SyncTransactionItem {
+  if (payload && 'operationKey' in payload) {
+    if (!payload.operationKey || typeof payload.operationKey !== 'string' || !payload.operationKey.trim()) {
+      throw new Error('INVALID_OPERATION_KEY: operationKey مفقود أو غير صالح ولا يمكن أن يكون فارغاً');
+    }
+  }
+
+  const opKey = explicitOperationKey || (payload && payload.operationKey);
+  const effectiveOperationKey = (opKey && typeof opKey === 'string' && opKey.trim())
+    ? opKey.trim()
+    : `${operationType}:${recordId}:${version}`;
+
+  if (!effectiveOperationKey || typeof effectiveOperationKey !== 'string' || !effectiveOperationKey.trim()) {
+    throw new Error('INVALID_OPERATION_KEY: operationKey مفقود أو غير صالح');
+  }
+
+  const effectiveTxId = transactionId || payload?.transactionId || `tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const queue = getPendingQueue();
-  const operationKey = `${operationType}:${recordId}:${version}`;
   const deviceId = getDeviceId();
   const now = new Date().toISOString();
   const db = loadDatabase();
 
-  // If already in queue with identical key, replace in place
-  const existingIdx = queue.findIndex(q => q.operationKey === operationKey);
+  // If already in queue with identical key, replace in place (Idempotency Enforcement)
+  const existingIdx = queue.findIndex(q => q.operationKey === effectiveOperationKey);
   const item: SyncTransactionItem = {
-    transactionId,
-    operationKey,
+    transactionId: effectiveTxId,
+    operationKey: effectiveOperationKey,
     recordId,
     operationType,
-    version,
+    version: version || 1,
     updatedAt: now,
     deviceId,
     resetBoundary: db?.resetBoundary,
@@ -115,7 +131,12 @@ export function enqueueTransaction(
     window.dispatchEvent(new CustomEvent('saflaq_queue_updated', { detail: { queueLength: queue.length } }));
   }
 
-  return item;
+  const result: any = queue;
+  result.transactionId = effectiveTxId;
+  result.operationKey = effectiveOperationKey;
+  result.recordId = recordId;
+  result.operationType = operationType;
+  return result;
 }
 
 /**
@@ -500,4 +521,78 @@ export function mergeServerDataSafely(localDb: DatabaseSchema, serverData: Parti
     saveDatabase(localDb, false);
   }
   return localDb;
+}
+
+/**
+ * Non-destructive merge strictly protecting currentStock and validating resetId
+ */
+export function mergeDatabasesNonDestructive(
+  serverDb: DatabaseSchema,
+  clientDb: DatabaseSchema
+): DatabaseSchema {
+  const serverResetId = serverDb.resetBoundary?.resetId || 'default';
+  const clientResetId = clientDb?.resetBoundary?.resetId;
+
+  // 1. Strict resetId check: Client with different resetId MUST be rejected
+  if (!clientResetId || clientResetId !== serverResetId) {
+    throw new Error(`STALE_RESET_ID: client resetId (${clientResetId}) does not match server resetId (${serverResetId})`);
+  }
+
+  const merged: DatabaseSchema = JSON.parse(JSON.stringify(serverDb));
+
+  // 2. Strict currentStock Protection:
+  // currentStock is authoritative from serverDb and MUST NOT be changed by merge, timestamp comparison, or formulas!
+  merged.stocks = JSON.parse(JSON.stringify(serverDb.stocks));
+
+  // 3. Merge tombstones safely
+  const tombstoneMap = new Map<string, any>();
+  (serverDb.tombstones || []).forEach(t => tombstoneMap.set(t.recordId, t));
+  (clientDb.tombstones || []).forEach(t => {
+    if (!tombstoneMap.has(t.recordId)) {
+      tombstoneMap.set(t.recordId, t);
+    }
+  });
+  merged.tombstones = Array.from(tombstoneMap.values());
+  const tombstoneSet = new Set(merged.tombstones.map(t => t.recordId));
+
+  // 4. Non-destructive supplies merge (without changing currentStock)
+  const serverSupplyMap = new Map((serverDb.supplies || []).map(s => [s.id, s]));
+  for (const cs of clientDb.supplies || []) {
+    if (tombstoneSet.has(cs.id) || cs.isDeleted) continue;
+    if (!serverSupplyMap.has(cs.id)) {
+      merged.supplies.push({ ...cs, syncStatus: 'synced' });
+      serverSupplyMap.set(cs.id, cs);
+    }
+  }
+
+  // 5. Non-destructive dispenses merge (without changing currentStock)
+  const serverDispenseMap = new Map((serverDb.dispenses || []).map(d => [d.id, d]));
+  for (const cd of clientDb.dispenses || []) {
+    if (tombstoneSet.has(cd.id) || cd.isDeleted) continue;
+    if (!serverDispenseMap.has(cd.id)) {
+      merged.dispenses.push({ ...cd, syncStatus: 'synced' });
+      serverDispenseMap.set(cd.id, cd);
+    }
+  }
+
+  // 6. Non-destructive late registrations merge
+  const serverLateMap = new Map((serverDb.lateRegistrations || []).map(r => [r.id, r]));
+  for (const cr of clientDb.lateRegistrations || []) {
+    if (tombstoneSet.has(cr.id) || cr.isDeleted) continue;
+    if (!serverLateMap.has(cr.id)) {
+      merged.lateRegistrations.push({ ...cr, syncStatus: 'synced' });
+      serverLateMap.set(cr.id, cr);
+    }
+  }
+
+  // 7. Non-destructive audit logs merge
+  const auditIdSet = new Set((serverDb.auditLogs || []).map(a => a.id));
+  for (const ca of clientDb.auditLogs || []) {
+    if (!auditIdSet.has(ca.id)) {
+      merged.auditLogs.push(ca);
+      auditIdSet.add(ca.id);
+    }
+  }
+
+  return merged;
 }

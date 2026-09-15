@@ -862,3 +862,39 @@ export function executeFactoryReset(resetBy: string = 'مدير النظام'): 
   memoryDb = empty;
   return empty;
 }
+
+export function recordSupply(
+  data: Partial<SupplyTransaction> & { category: StockCategory; quantity: number; supplier?: string }
+): SupplyTransaction {
+  const fullData: any = {
+    documentNumber: data.documentNumber || `doc-${Date.now()}`,
+    date: data.date || new Date().toISOString().split('T')[0],
+    receivedBy: data.receivedBy || (data as any).supplier || 'غير محدد',
+    supplierSource: data.supplierSource || (data as any).supplier || 'مخزن الإدارة',
+    notes: data.notes || '',
+    ...data
+  };
+  addSupply(fullData);
+  const db = loadDatabase();
+  return db.supplies[0];
+}
+
+export function recordDispense(
+  data: Partial<DispenseRecord> & { category: StockCategory; quantity: number }
+): DispenseRecord {
+  const fullData: any = {
+    date: data.date || new Date().toISOString().split('T')[0],
+    citizenName: data.citizenName || 'مواطن',
+    transactionType: data.transactionType || 'other',
+    dispensedBy: data.dispensedBy || 'غير محدد',
+    collectedAmount: data.collectedAmount ?? 0,
+    notes: data.notes || '',
+    ...data
+  };
+  addDispense(fullData);
+  const db = loadDatabase();
+  return db.dispenses[0];
+}
+
+export const recordManualStockAdjustment = manualAdjustStock;
+

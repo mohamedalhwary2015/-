@@ -37,6 +37,21 @@ import {
 } from '../src/storage/syncManager';
 import { DatabaseSchema, StockCategory } from '../src/types';
 
+// Mock storage for Node.js environment
+const storageMap = new Map<string, string>();
+(global as any).localStorage = {
+  getItem: (key: string) => storageMap.get(key) || null,
+  setItem: (key: string, val: string) => storageMap.set(key, val),
+  removeItem: (key: string) => storageMap.delete(key),
+  clear: () => storageMap.clear(),
+  length: 0,
+  key: (i: number) => Array.from(storageMap.keys())[i] || null
+};
+(global as any).window = {
+  dispatchEvent: () => {},
+  localStorage: (global as any).localStorage
+};
+
 describe('FINAL AUDIT — الاختبارات الـ 20 الإلزامية الصارمة', () => {
   beforeEach(() => {
     localStorage.clear();

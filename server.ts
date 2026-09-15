@@ -214,17 +214,17 @@ app.post('/api/sync/transactions', (req, res) => {
     const acknowledgedKeys: string[] = [];
 
     // 1. Strict Reset Boundary Check (Point 1: Server is ultimate source of truth, no old device queue accepted)
-    if (serverDb.resetBoundary && serverDb.resetBoundary.resetId) {
-      const clientResetId = resetBoundary?.resetId;
-      if (!clientResetId || clientResetId !== serverDb.resetBoundary.resetId) {
-        return res.status(409).json({
-          code: 'STALE_RESET_ID',
-          error: 'STALE_RESET_ID',
-          legacyCode: 'RESET_BOUNDARY_VIOLATION',
-          message: 'STALE_RESET_ID: تم تصفير النظام مركزياً. الحركات المتبقية من الجلسة السابقة مرفوضة.',
-          serverBoundary: serverDb.resetBoundary
-        });
-      }
+    const serverResetId = serverDb.resetBoundary?.resetId || 'default';
+    const clientResetId = resetBoundary?.resetId;
+    if (!clientResetId || clientResetId !== serverResetId) {
+      return res.status(409).json({
+        code: 'STALE_RESET_ID',
+        error: 'STALE_RESET_ID',
+        legacyCode: 'RESET_BOUNDARY_VIOLATION',
+        message: 'STALE_RESET_ID: تم تصفير النظام مركزياً أو عدم تطابق معرف دورة التصفير. الحركات المتبقية من الجلسة السابقة مرفوضة.',
+        serverResetId,
+        serverBoundary: serverDb.resetBoundary
+      });
     }
 
     if (!Array.isArray(transactions) || transactions.length === 0) {
@@ -305,16 +305,15 @@ app.post('/api/sync/transactions', (req, res) => {
 
       // Reset Boundary check on transaction item level
       const effectiveItemResetId = itemResetBoundary?.resetId || resetBoundary?.resetId;
-      if (serverDb.resetBoundary && serverDb.resetBoundary.resetId) {
-        if (!effectiveItemResetId || effectiveItemResetId !== serverDb.resetBoundary.resetId) {
-          return res.status(409).json({
-            code: 'STALE_RESET_ID',
-            error: 'STALE_RESET_ID',
-            legacyCode: 'RESET_BOUNDARY_VIOLATION',
-            message: 'STALE_RESET_ID: تم تصفير النظام مركزياً. الحركات المتبقية من الجلسة السابقة مرفوضة.',
-            serverBoundary: serverDb.resetBoundary
-          });
-        }
+      if (!effectiveItemResetId || effectiveItemResetId !== serverResetId) {
+        return res.status(409).json({
+          code: 'STALE_RESET_ID',
+          error: 'STALE_RESET_ID',
+          legacyCode: 'RESET_BOUNDARY_VIOLATION',
+          message: 'STALE_RESET_ID: تم تصفير النظام مركزياً أو عدم تطابق معرف دورة التصفير. الحركات المتبقية من الجلسة السابقة مرفوضة.',
+          serverResetId,
+          serverBoundary: serverDb.resetBoundary
+        });
       }
 
       // Payload validation
@@ -730,6 +729,161 @@ app.post('/api/sync/transactions', (req, res) => {
 });
 
 /**
+ * Non-destructive merge strictly protecting currentStock and validating resetId
+ */
+function mergeDatabasesNonDestructive(
+  serverDb: DatabaseSchema,
+  clientDb: DatabaseSchema
+): DatabaseSchema {
+  const serverResetId = serverDb.resetBoundary?.resetId || 'default';
+  const clientResetId = clientDb?.resetBoundary?.resetId;
+
+  if (!clientResetId || clientResetId !== serverResetId) {
+    throw new Error(`STALE_RESET_ID: client resetId (${clientResetId}) does not match server resetId (${serverResetId})`);
+  }
+
+  const merged: DatabaseSchema = JSON.parse(JSON.stringify(serverDb));
+
+  // 1. currentStock Protection: Server stocks are authoritative, NEVER overwritten by client or formulas
+  merged.stocks = JSON.parse(JSON.stringify(serverDb.stocks));
+
+  // 2. Tombstones union
+  const tombstoneMap = new Map<string, any>();
+  (serverDb.tombstones || []).forEach(t => tombstoneMap.set(t.recordId, t));
+  (clientDb.tombstones || []).forEach(t => {
+    if (!tombstoneMap.has(t.recordId)) {
+      tombstoneMap.set(t.recordId, t);
+    }
+  });
+  merged.tombstones = Array.from(tombstoneMap.values());
+  const tombstoneSet = new Set(merged.tombstones.map(t => t.recordId));
+
+  // 3. Supplies union (does not alter currentStock)
+  const serverSupplyMap = new Map((serverDb.supplies || []).map(s => [s.id, s]));
+  for (const cs of clientDb.supplies || []) {
+    if (tombstoneSet.has(cs.id) || cs.isDeleted) continue;
+    if (!serverSupplyMap.has(cs.id)) {
+      merged.supplies.push({ ...cs, syncStatus: 'synced' });
+      serverSupplyMap.set(cs.id, cs);
+    }
+  }
+
+  // 4. Dispenses union (does not alter currentStock)
+  const serverDispenseMap = new Map((serverDb.dispenses || []).map(d => [d.id, d]));
+  for (const cd of clientDb.dispenses || []) {
+    if (tombstoneSet.has(cd.id) || cd.isDeleted) continue;
+    if (!serverDispenseMap.has(cd.id)) {
+      merged.dispenses.push({ ...cd, syncStatus: 'synced' });
+      serverDispenseMap.set(cd.id, cd);
+    }
+  }
+
+  // 5. Late registrations union
+  const serverLateMap = new Map((serverDb.lateRegistrations || []).map(r => [r.id, r]));
+  for (const cr of clientDb.lateRegistrations || []) {
+    if (tombstoneSet.has(cr.id) || cr.isDeleted) continue;
+    if (!serverLateMap.has(cr.id)) {
+      merged.lateRegistrations.push({ ...cr, syncStatus: 'synced' });
+      serverLateMap.set(cr.id, cr);
+    }
+  }
+
+  // 6. Audit logs union
+  const auditIdSet = new Set((serverDb.auditLogs || []).map(a => a.id));
+  for (const ca of clientDb.auditLogs || []) {
+    if (!auditIdSet.has(ca.id)) {
+      merged.auditLogs.push(ca);
+      auditIdSet.add(ca.id);
+    }
+  }
+
+  return merged;
+}
+
+/**
+ * Full Sync Endpoint (Rules 1, 2 & 4: Strict resetId validation, non-destructive merge)
+ */
+app.post('/api/sync', (req, res) => {
+  try {
+    const { clientDb, resetBoundary, deviceId } = req.body || {};
+    const serverDb = loadServerDb();
+    const serverResetId = serverDb.resetBoundary?.resetId || 'default';
+    const clientResetId = clientDb?.resetBoundary?.resetId || resetBoundary?.resetId;
+
+    // 1. Strict resetId validation: Client resetId MUST equal server resetId
+    if (!clientResetId || clientResetId !== serverResetId) {
+      return res.status(409).json({
+        code: 'STALE_RESET_ID',
+        error: 'STALE_RESET_ID',
+        message: 'STALE_RESET_ID: تم رفض المزامنة لعدم تطابق معرف دورة قاعدة البيانات resetId',
+        serverResetId,
+        serverBoundary: serverDb.resetBoundary
+      });
+    }
+
+    // 2. Non-destructive merge strictly protecting currentStock:
+    // mergeDatabasesNonDestructive is called ONLY after resetId is verified
+    if (clientDb) {
+      const merged = mergeDatabasesNonDestructive(serverDb, clientDb);
+      saveServerDb(merged);
+      return res.json({
+        success: true,
+        serverResetId,
+        serverData: merged
+      });
+    }
+
+    return res.json({
+      success: true,
+      serverResetId,
+      serverData: serverDb
+    });
+  } catch (err: any) {
+    if (err?.message?.includes('STALE_RESET_ID')) {
+      const serverDb = loadServerDb();
+      return res.status(409).json({
+        code: 'STALE_RESET_ID',
+        error: 'STALE_RESET_ID',
+        message: err.message,
+        serverResetId: serverDb.resetBoundary?.resetId,
+        serverBoundary: serverDb.resetBoundary
+      });
+    }
+    res.status(500).json({ error: err?.message || 'خطأ في معالجة المزامنة' });
+  }
+});
+
+/**
+ * Sync Changes Endpoint (Rules 1 & 2: Strict resetId validation)
+ */
+app.post('/api/sync/changes', (req, res) => {
+  try {
+    const { resetBoundary, resetId, changes, deviceId } = req.body || {};
+    const serverDb = loadServerDb();
+    const serverResetId = serverDb.resetBoundary?.resetId || 'default';
+    const clientResetId = resetId || resetBoundary?.resetId;
+
+    if (!clientResetId || clientResetId !== serverResetId) {
+      return res.status(409).json({
+        code: 'STALE_RESET_ID',
+        error: 'STALE_RESET_ID',
+        message: 'STALE_RESET_ID: تم رفض التغييرات لعدم تطابق معرف دورة التصفير resetId',
+        serverResetId,
+        serverBoundary: serverDb.resetBoundary
+      });
+    }
+
+    res.json({
+      success: true,
+      serverResetId,
+      serverData: serverDb
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'خطأ في معالجة التغييرات' });
+  }
+});
+
+/**
  * Server Factory Reset (Rules 18 & 19 - Full Wipe & Reset Boundary with Backup Snapshot)
  */
 app.post('/api/database/factory-reset', (req, res) => {
@@ -786,14 +940,15 @@ app.post('/api/repair/apply', (req, res) => {
     const serverDb = loadServerDb();
 
     // 1. Check resetId
-    if (serverDb.resetBoundary && serverDb.resetBoundary.resetId) {
-      if (!cleanDb.resetBoundary?.resetId || cleanDb.resetBoundary.resetId !== serverDb.resetBoundary.resetId) {
-        return res.status(409).json({
-          code: 'STALE_RESET_ID',
-          error: 'STALE_RESET_ID',
-          message: 'STALE_RESET_ID: معرف التصفير غير متطابق مع الخادم المركزي'
-        });
-      }
+    const serverResetId = serverDb.resetBoundary?.resetId || 'default';
+    if (!cleanDb.resetBoundary?.resetId || cleanDb.resetBoundary.resetId !== serverResetId) {
+      return res.status(409).json({
+        code: 'STALE_RESET_ID',
+        error: 'STALE_RESET_ID',
+        message: 'STALE_RESET_ID: معرف التصفير غير متطابق مع الخادم المركزي',
+        serverResetId,
+        serverBoundary: serverDb.resetBoundary
+      });
     }
 
     // 2. Check currentStock protection (Rule 1, 2, 9)
@@ -822,7 +977,7 @@ app.post('/api/repair/apply', (req, res) => {
 
     for (const s of serverDb.supplies || []) {
       if (s.isDeleted) continue;
-      const cleanSup = cleanSupplyMap.get(s.id);
+      const cleanSup: any = cleanSupplyMap.get(s.id);
       if (!cleanSup && !cleanTombstones.has(s.id)) {
         supplyViolations.push(`توريد حقيقي مفقود دون شاهد حذف: ${s.id} (${s.documentNumber})`);
       } else if (cleanSup) {
@@ -838,7 +993,7 @@ app.post('/api/repair/apply', (req, res) => {
 
     for (const d of serverDb.dispenses || []) {
       if (d.isDeleted) continue;
-      const cleanDsp = cleanDispenseMap.get(d.id);
+      const cleanDsp: any = cleanDispenseMap.get(d.id);
       if (!cleanDsp && !cleanTombstones.has(d.id)) {
         dispenseViolations.push(`صرف حقيقي مفقود دون شاهد حذف: ${d.id} (${d.citizenName})`);
       } else if (cleanDsp) {
