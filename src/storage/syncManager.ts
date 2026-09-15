@@ -217,19 +217,29 @@ export async function executeAutoSync(
         const errJson = JSON.parse(errText);
         parsedErr = errJson.message || errJson.error || parsedErr;
 
-        // Reset Boundary Violation: Old device was offline during factory reset
-        if (errJson.code === 'RESET_BOUNDARY_VIOLATION') {
-          console.warn('Reset boundary violation detected. Purging old device queue.');
+        // Reset Boundary Violation: Old device was offline during factory reset / Stale resetId
+        if (errJson.code === 'STALE_RESET_ID' || errJson.code === 'RESET_BOUNDARY_VIOLATION') {
+          console.warn('STALE_RESET_ID detected. Purging old device queue and adopting current server state.');
           savePendingQueue([]);
-          // Adopt server's new clean reset state
-          if (errJson.serverBoundary) {
-            currentDb.resetBoundary = errJson.serverBoundary;
-            saveDatabase(currentDb, false);
+          try {
+            const freshRes = await fetch('/api/database');
+            if (freshRes.ok) {
+              const freshDb = await freshRes.json();
+              saveDatabase(freshDb, false);
+            } else if (errJson.serverBoundary) {
+              currentDb.resetBoundary = errJson.serverBoundary;
+              saveDatabase(currentDb, false);
+            }
+          } catch {
+            if (errJson.serverBoundary) {
+              currentDb.resetBoundary = errJson.serverBoundary;
+              saveDatabase(currentDb, false);
+            }
           }
-          updateSyncStatus('failed', 'تم تصفير النظام مركزياً - تم إيقاف الحركات السابقة للتصفير');
+          updateSyncStatus('failed', 'STALE_RESET_ID: تم رفض الحركات لعدم تطابق resetId مع الخادم، وتم تفريغ الطابور وجلب الحالة من الخادم');
           return {
             success: false,
-            message: 'تم تصفير النظام مركزياً - تم رفض الحركات السابقة للتصفير وفق حد الأمان الزمني',
+            message: 'STALE_RESET_ID: تم تصفير النظام أو اختلاف resetId - تم رفض الحركات القديمة وتحديث الحالة من الخادم',
             pendingCount: 0
           };
         }

@@ -178,7 +178,8 @@ export interface Tombstone {
 
 export interface ResetBoundary {
   resetId: string;
-  resetTimestamp: string;
+  resetTimestamp?: string;
+  resetAt?: string;
   resetBy: string;
   reason?: string;
 }
