@@ -562,7 +562,28 @@ export function mergeDatabasesNonDestructive(
     serverDb?.resetBoundary?.resetId
   );
 
+  const serverResetId = serverDb.resetBoundary?.resetId;
+  const clientResetId = clientDb.resetBoundary?.resetId;
+
+  if (
+    typeof serverResetId !== "string" ||
+    !serverResetId ||
+    typeof clientResetId !== "string" ||
+    !clientResetId ||
+    serverResetId !== clientResetId
+  ) {
+    const error = new Error("STALE_RESET_ID");
+    (error as any).code = "STALE_RESET_ID";
+    throw error;
+  }
+
+  const serverBoundary = serverDb.resetBoundary;
+  const clientBoundary = clientDb.resetBoundary;
+
+  const effectiveBoundary = serverBoundary || clientBoundary;
+
   const merged: DatabaseSchema = JSON.parse(JSON.stringify(serverDb));
+  merged.resetBoundary = effectiveBoundary;
 
   // 2. Strict currentStock Protection:
   // currentStock is authoritative from serverDb and MUST NOT be changed by merge, timestamp comparison, or formulas!

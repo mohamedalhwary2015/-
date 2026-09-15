@@ -55,11 +55,14 @@ export interface BalanceMismatchItem {
 export interface StockDiscrepancyItem {
   type: 'STOCK_DISCREPANCY';
   code: 'STOCK_DISCREPANCY';
+  itemId?: string;
   category: StockCategory;
   categoryLabel: string;
   recordedStock: number;
+  recordedCurrentStock?: number;
   currentStock: number;
   calculatedStock: number;
+  calculatedCurrentStock?: number;
   difference: number;
   received: number;
   dispensed: number;
@@ -340,11 +343,14 @@ export function executeProductionRepair(
     .map(ca => ({
       type: 'STOCK_DISCREPANCY',
       code: 'STOCK_DISCREPANCY',
+      itemId: ca.category,
       category: ca.category,
       categoryLabel: CATEGORY_LABELS[ca.category] || ca.category,
       recordedStock: ca.currentStock,
+      recordedCurrentStock: ca.currentStock,
       currentStock: ca.currentStock,
       calculatedStock: ca.theoreticalStock,
+      calculatedCurrentStock: ca.theoreticalStock,
       difference: ca.difference,
       received: ca.totalReceived,
       dispensed: ca.totalDispensed,

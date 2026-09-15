@@ -90,25 +90,35 @@ function createServerEmptyDatabase(): DatabaseSchema {
   };
 }
 
+let cachedDatabase: DatabaseSchema | null = null;
+
+function loadDatabaseFromDisk(): DatabaseSchema {
+  return loadServerDb();
+}
+
 function loadServerDb(): DatabaseSchema {
   try {
     if (!fs.existsSync(DB_FILE)) {
       const fresh = createServerEmptyDatabase();
       fs.writeFileSync(DB_FILE, JSON.stringify(fresh, null, 2), 'utf-8');
+      cachedDatabase = fresh;
       return fresh;
     }
     const raw = fs.readFileSync(DB_FILE, 'utf-8');
     const parsed = JSON.parse(raw);
+    cachedDatabase = parsed;
     return parsed;
   } catch (err) {
     console.error('Error loading server DB, creating clean empty database:', err);
     const fresh = createServerEmptyDatabase();
     fs.writeFileSync(DB_FILE, JSON.stringify(fresh, null, 2), 'utf-8');
+    cachedDatabase = fresh;
     return fresh;
   }
 }
 
 function saveServerDb(db: DatabaseSchema): void {
+  cachedDatabase = db;
   db.lastUpdated = new Date().toISOString();
   db.version = (db.version || 1) + 1;
   const tempFile = `${DB_FILE}.tmp.${Date.now()}`;
@@ -226,26 +236,31 @@ export function requireMatchingResetId(
 app.post('/api/sync/transactions', (req, res) => {
   try {
     const { deviceId, resetBoundary, transactions } = req.body || {};
-    const serverDb = loadServerDb();
+    const currentServerDb = cachedDatabase || loadServerDb();
+    const serverDb = currentServerDb;
     const processedKeys = loadProcessedKeys();
     const acknowledgedKeys: string[] = [];
 
     // 1. Strict Reset Boundary Check (Point 1: Server is ultimate source of truth, no old device queue accepted)
-    const serverResetId = serverDb.resetBoundary?.resetId;
+    const serverResetId = currentServerDb.resetBoundary?.resetId;
 
     try {
       requireMatchingResetId(
-        req.body?.resetId ?? req.body?.clientDb?.resetBoundary?.resetId ?? req.body?.resetBoundary?.resetId,
+        req.body?.resetId ||
+        req.body?.database?.resetBoundary?.resetId ||
+        resetBoundary?.resetId ||
+        req.body?.clientDb?.resetBoundary?.resetId,
         serverResetId
       );
     } catch (err: any) {
       return res.status(409).json({
+        success: false,
         ok: false,
-        code: "STALE_RESET_ID",
         error: "STALE_RESET_ID",
-        message: "Client resetId does not match server resetId. Full refresh required.",
+        code: "STALE_RESET_ID",
+        message: "Client resetId does not match current server resetId.",
         serverResetId,
-        serverBoundary: serverDb.resetBoundary
+        serverBoundary: currentServerDb.resetBoundary
       });
     }
 
@@ -289,18 +304,38 @@ app.post('/api/sync/transactions', (req, res) => {
         return res.status(400).json({ error: 'معرف الحركة transactionId مفقود أو غير صالح', item });
       }
 
-      const opKey = item.operationKey;
+      const txId = item.transactionId || (item as any).syncId;
+      const opType = item.operationType;
+      const recId =
+        item.recordId ||
+        item.payload?.id ||
+        (item.payload as any)?.recordId ||
+        '';
 
       if (
-        typeof opKey !== "string" ||
-        opKey.trim().length < 10
+        typeof item.operationKey !== "string" ||
+        !item.operationKey.trim()
       ) {
         return res.status(400).json({
+          success: false,
           ok: false,
+          error: "INVALID_OPERATION_KEY",
+          code: "INVALID_OPERATION_KEY",
+          message: "operationKey is required and must be non-empty."
+        });
+      }
+
+      if (item.operationKey.trim().length < 10) {
+        return res.status(400).json({
+          success: false,
+          ok: false,
+          error: "INVALID_OPERATION_KEY",
           code: "INVALID_OPERATION_KEY",
           message: "A valid stable operationKey is required."
         });
       }
+
+      const opKey = item.operationKey.trim();
 
       if (!recordId || typeof recordId !== 'string' || !recordId.trim()) {
         return res.status(400).json({ error: 'معرف السجل recordId مفقود أو غير صالح', item });
@@ -387,7 +422,7 @@ app.post('/api/sync/transactions', (req, res) => {
     }
 
     let modified = false;
-    const tombstoneSet = new Set((serverDb.tombstones || []).map(t => t.recordId));
+    const tombstoneSet = new Set((serverDb.tombstones || []).map((t: any) => t.recordId));
 
     for (const item of transactions as SyncTransactionItem[]) {
       const { operationKey, operationType, recordId, payload, transactionId, version } = item;
@@ -422,7 +457,7 @@ app.post('/api/sync/transactions', (req, res) => {
 
             // Point 6: Conflict detection for offline devices
             // If another device changed stock while this device was offline (baseline mismatch and distinct adjustment exists)
-            const hasConflictingAdjustment = prevStockInPayload !== oldStock && serverDb.auditLogs.some(a =>
+            const hasConflictingAdjustment = prevStockInPayload !== oldStock && serverDb.auditLogs.some((a: any) =>
               (a.category === cat || a.itemId === cat) &&
               (a.operationType === 'MANUAL_STOCK_ADJUSTMENT' || a.action === 'تسوية رصيد جرد يدوي صريح') &&
               a.transactionId !== transactionId
@@ -497,8 +532,8 @@ app.post('/api/sync/transactions', (req, res) => {
             stock && (
               stock.totalReceived > 0 ||
               stock.totalDispensed > 0 ||
-              serverDb.supplies.some(s => !s.isDeleted && s.category === cat) ||
-              serverDb.dispenses.some(d => !d.isDeleted && d.category === cat)
+              serverDb.supplies.some((s: any) => !s.isDeleted && s.category === cat) ||
+              serverDb.dispenses.some((d: any) => !d.isDeleted && d.category === cat)
             )
           );
           const existingOb = serverDb.openingBalances?.[cat];
@@ -562,7 +597,7 @@ app.post('/api/sync/transactions', (req, res) => {
           break;
         }
         case 'SUPPLY_ADD': {
-          const exists = serverDb.supplies.some(s => s.id === recordId || s.transactionId === transactionId);
+          const exists = serverDb.supplies.some((s: any) => s.id === recordId || s.transactionId === transactionId);
           if (!exists) {
             serverDb.supplies.unshift({ ...payload, syncStatus: 'synced' });
             const stock = serverDb.stocks[payload.category as StockCategory];
@@ -575,7 +610,7 @@ app.post('/api/sync/transactions', (req, res) => {
           break;
         }
         case 'SUPPLY_UPDATE': {
-          const idx = serverDb.supplies.findIndex(s => s.id === recordId);
+          const idx = serverDb.supplies.findIndex((s: any) => s.id === recordId);
           if (idx >= 0) {
             const old = serverDb.supplies[idx];
             if ((version || 1) >= (old.version || 1)) {
@@ -606,7 +641,7 @@ app.post('/api/sync/transactions', (req, res) => {
           break;
         }
         case 'SUPPLY_DELETE': {
-          const idx = serverDb.supplies.findIndex(s => s.id === recordId);
+          const idx = serverDb.supplies.findIndex((s: any) => s.id === recordId);
           if (idx >= 0) {
             const existing = serverDb.supplies[idx];
             const stock = serverDb.stocks[existing.category as StockCategory];
@@ -631,7 +666,7 @@ app.post('/api/sync/transactions', (req, res) => {
           break;
         }
         case 'DISPENSE_ADD': {
-          const exists = serverDb.dispenses.some(d => d.id === recordId || d.transactionId === transactionId);
+          const exists = serverDb.dispenses.some((d: any) => d.id === recordId || d.transactionId === transactionId);
           if (!exists) {
             serverDb.dispenses.unshift({ ...payload, syncStatus: 'synced' });
             const stock = serverDb.stocks[payload.category as StockCategory];
@@ -644,7 +679,7 @@ app.post('/api/sync/transactions', (req, res) => {
           break;
         }
         case 'DISPENSE_UPDATE': {
-          const idx = serverDb.dispenses.findIndex(d => d.id === recordId);
+          const idx = serverDb.dispenses.findIndex((d: any) => d.id === recordId);
           if (idx >= 0) {
             const old = serverDb.dispenses[idx];
             if ((version || 1) >= (old.version || 1)) {
@@ -675,12 +710,12 @@ app.post('/api/sync/transactions', (req, res) => {
           break;
         }
         case 'DISPENSE_DELETE': {
-          const idx = serverDb.dispenses.findIndex(d => d.id === recordId);
+          const idx = serverDb.dispenses.findIndex((d: any) => d.id === recordId);
           if (idx >= 0) {
             const existing = serverDb.dispenses[idx];
             const stock = serverDb.stocks[existing.category as StockCategory];
             if (stock) {
-              stock.currentStock += existing.quantity;
+              stock.currentStock -= existing.quantity;
               stock.totalDispensed -= existing.quantity;
             }
             serverDb.dispenses.splice(idx, 1);
@@ -700,7 +735,7 @@ app.post('/api/sync/transactions', (req, res) => {
           break;
         }
         case 'LATE_REG_ADD': {
-          const exists = serverDb.lateRegistrations.some(r => r.id === recordId || r.transactionId === transactionId);
+          const exists = serverDb.lateRegistrations.some((r: any) => r.id === recordId || r.transactionId === transactionId);
           if (!exists) {
             serverDb.lateRegistrations.unshift({ ...payload, syncStatus: 'synced' });
             modified = true;
@@ -708,7 +743,7 @@ app.post('/api/sync/transactions', (req, res) => {
           break;
         }
         case 'LATE_REG_UPDATE': {
-          const idx = serverDb.lateRegistrations.findIndex(r => r.id === recordId);
+          const idx = serverDb.lateRegistrations.findIndex((r: any) => r.id === recordId);
           if (idx >= 0) {
             const old = serverDb.lateRegistrations[idx];
             if ((version || 1) >= (old.version || 1)) {
@@ -719,7 +754,7 @@ app.post('/api/sync/transactions', (req, res) => {
           break;
         }
         case 'LATE_REG_DELETE': {
-          const idx = serverDb.lateRegistrations.findIndex(r => r.id === recordId);
+          const idx = serverDb.lateRegistrations.findIndex((r: any) => r.id === recordId);
           if (idx >= 0) {
             serverDb.lateRegistrations.splice(idx, 1);
             modified = true;
@@ -771,7 +806,28 @@ function mergeDatabasesNonDestructive(
     serverDb?.resetBoundary?.resetId
   );
 
+  const serverResetId = serverDb.resetBoundary?.resetId;
+  const clientResetId = clientDb.resetBoundary?.resetId;
+
+  if (
+    typeof serverResetId !== "string" ||
+    !serverResetId ||
+    typeof clientResetId !== "string" ||
+    !clientResetId ||
+    serverResetId !== clientResetId
+  ) {
+    const error = new Error("STALE_RESET_ID");
+    (error as any).code = "STALE_RESET_ID";
+    throw error;
+  }
+
+  const serverBoundary = serverDb.resetBoundary;
+  const clientBoundary = clientDb.resetBoundary;
+
+  const effectiveBoundary = serverBoundary || clientBoundary;
+
   const merged: DatabaseSchema = JSON.parse(JSON.stringify(serverDb));
+  merged.resetBoundary = effectiveBoundary;
 
   // 1. currentStock Protection: Server stocks are authoritative, NEVER overwritten by client or formulas
   merged.stocks = JSON.parse(JSON.stringify(serverDb.stocks));
@@ -834,36 +890,42 @@ function mergeDatabasesNonDestructive(
  */
 app.post('/api/sync', (req, res) => {
   try {
-    const { clientDb, resetBoundary, deviceId } = req.body || {};
-    const serverDb = loadServerDb();
-    const serverResetId = serverDb.resetBoundary?.resetId;
+    const { database: clientDbBody, clientDb: altClientDb, trigger, clientMeta } = req.body || {};
+    const clientDb = clientDbBody || altClientDb;
+
+    const currentServerDb = cachedDatabase || loadServerDb();
+    const serverResetId = currentServerDb.resetBoundary?.resetId;
 
     try {
       requireMatchingResetId(
-        req.body?.resetId ?? req.body?.clientDb?.resetBoundary?.resetId ?? resetBoundary?.resetId,
+        clientDb?.resetBoundary?.resetId ?? req.body?.resetId ?? req.body?.resetBoundary?.resetId,
         serverResetId
       );
     } catch (err: any) {
       return res.status(409).json({
         ok: false,
+        success: false,
         code: "STALE_RESET_ID",
         error: "STALE_RESET_ID",
-        message: "Client resetId does not match server resetId. Full refresh required.",
+        message: "Client resetId does not match current server resetId.",
         serverResetId,
-        serverBoundary: serverDb.resetBoundary
+        serverBoundary: currentServerDb.resetBoundary
       });
     }
 
     // 2. Non-destructive merge strictly protecting currentStock:
     // mergeDatabasesNonDestructive is called ONLY after resetId is verified
     if (clientDb) {
-      const merged = mergeDatabasesNonDestructive(serverDb, clientDb);
-      saveServerDb(merged);
+      const mergedDb = mergeDatabasesNonDestructive(
+        currentServerDb,
+        clientDb
+      );
+      saveServerDb(mergedDb);
       return res.json({
         ok: true,
         success: true,
         serverResetId,
-        serverData: merged
+        serverData: mergedDb
       });
     }
 
@@ -871,16 +933,17 @@ app.post('/api/sync', (req, res) => {
       ok: true,
       success: true,
       serverResetId,
-      serverData: serverDb
+      serverData: currentServerDb
     });
   } catch (err: any) {
     if (err?.message?.includes('STALE_RESET_ID') || err?.code === 'STALE_RESET_ID') {
-      const serverDb = loadServerDb();
+      const serverDb = cachedDatabase || loadServerDb();
       return res.status(409).json({
         ok: false,
+        success: false,
         code: "STALE_RESET_ID",
         error: "STALE_RESET_ID",
-        message: "Client resetId does not match server resetId. Full refresh required.",
+        message: "Client resetId does not match current server resetId.",
         serverResetId: serverDb.resetBoundary?.resetId,
         serverBoundary: serverDb.resetBoundary
       });
@@ -895,22 +958,26 @@ app.post('/api/sync', (req, res) => {
 app.post('/api/sync/changes', (req, res) => {
   try {
     const { resetBoundary, resetId, changes, deviceId } = req.body || {};
-    const serverDb = loadServerDb();
-    const serverResetId = serverDb.resetBoundary?.resetId;
+    const currentServerDb = cachedDatabase || loadServerDb();
+    const serverResetId = currentServerDb.resetBoundary?.resetId;
 
     try {
       requireMatchingResetId(
-        req.body?.resetId ?? req.body?.clientDb?.resetBoundary?.resetId ?? resetBoundary?.resetId,
-        serverResetId
+        req.body?.resetId ||
+        req.body?.database?.resetBoundary?.resetId ||
+        resetBoundary?.resetId ||
+        req.body?.clientDb?.resetBoundary?.resetId,
+        currentServerDb?.resetBoundary?.resetId
       );
     } catch (err: any) {
       return res.status(409).json({
+        success: false,
         ok: false,
-        code: "STALE_RESET_ID",
         error: "STALE_RESET_ID",
-        message: "Client resetId does not match server resetId. Full refresh required.",
+        code: "STALE_RESET_ID",
+        message: "Client belongs to an old reset cycle.",
         serverResetId,
-        serverBoundary: serverDb.resetBoundary
+        serverBoundary: currentServerDb.resetBoundary
       });
     }
 
@@ -918,16 +985,17 @@ app.post('/api/sync/changes', (req, res) => {
       ok: true,
       success: true,
       serverResetId,
-      serverData: serverDb
+      serverData: currentServerDb
     });
   } catch (err: any) {
     if (err?.message?.includes('STALE_RESET_ID') || err?.code === 'STALE_RESET_ID') {
-      const serverDb = loadServerDb();
+      const serverDb = cachedDatabase || loadServerDb();
       return res.status(409).json({
+        success: false,
         ok: false,
         code: "STALE_RESET_ID",
         error: "STALE_RESET_ID",
-        message: "Client resetId does not match server resetId. Full refresh required.",
+        message: "Client belongs to an old reset cycle.",
         serverResetId: serverDb.resetBoundary?.resetId,
         serverBoundary: serverDb.resetBoundary
       });
@@ -942,6 +1010,8 @@ app.post('/api/sync/changes', (req, res) => {
 app.post('/api/database/factory-reset', (req, res) => {
   try {
     const { performedBy } = req.body;
+    const oldServerDb = cachedDatabase || loadServerDb();
+    const oldResetId = oldServerDb?.resetBoundary?.resetId;
 
     // Point 11 & 14: Save snapshot backup before factory reset
     if (fs.existsSync(DB_FILE)) {
@@ -954,6 +1024,11 @@ app.post('/api/database/factory-reset', (req, res) => {
     }
 
     const cleanDb = createServerEmptyDatabase();
+    let newResetId = `srv-rst-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 8)}`;
+    while (newResetId === oldResetId) {
+      newResetId = `srv-rst-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 8)}`;
+    }
+    cleanDb.resetBoundary.resetId = newResetId;
     cleanDb.resetBoundary.resetBy = performedBy || 'مدير النظام';
     saveServerDb(cleanDb);
 
@@ -981,7 +1056,8 @@ app.post('/api/database/factory-reset', (req, res) => {
  */
 app.post('/api/repair/apply', (req, res) => {
   try {
-    const { cleanDb, explicitApproval, operatorName } = req.body || {};
+    const { database: cleanDbBody, cleanDb: altCleanDb, reportMarkdown, removedCount, deviceId, explicitApproval, operatorName } = req.body || {};
+    const cleanDb = cleanDbBody || altCleanDb;
     if (!cleanDb || typeof cleanDb !== 'object') {
       return res.status(400).json({
         ok: false,
@@ -993,13 +1069,12 @@ app.post('/api/repair/apply', (req, res) => {
     const loadDatabaseFromDisk = loadServerDb;
     const saveDatabaseToDisk = saveServerDb;
 
-    const currentDb = loadDatabaseFromDisk();
-    const serverResetId = currentDb.resetBoundary?.resetId;
+    const currentDb = cachedDatabase || loadDatabaseFromDisk();
 
     try {
       requireMatchingResetId(
         cleanDb?.resetBoundary?.resetId,
-        serverResetId
+        currentDb?.resetBoundary?.resetId
       );
     } catch (err: any) {
       return res.status(409).json({
@@ -1007,7 +1082,7 @@ app.post('/api/repair/apply', (req, res) => {
         code: "STALE_RESET_ID",
         error: "STALE_RESET_ID",
         message: "Client resetId does not match server resetId. Full refresh required.",
-        serverResetId,
+        serverResetId: currentDb.resetBoundary?.resetId,
         serverBoundary: currentDb.resetBoundary
       });
     }
@@ -1029,11 +1104,18 @@ app.post('/api/repair/apply', (req, res) => {
       }
     }
 
+    // Repair must never overwrite real financial/stock state.
     cleanDb.stocks = currentDb.stocks;
+    cleanDb.supplyTransactions = (currentDb as any).supplyTransactions || currentDb.supplies;
     cleanDb.supplies = currentDb.supplies;
+    cleanDb.dispenseRecords = (currentDb as any).dispenseRecords || currentDb.dispenses;
     cleanDb.dispenses = currentDb.dispenses;
     cleanDb.lateRegistrations = currentDb.lateRegistrations;
     cleanDb.tombstones = currentDb.tombstones;
+    cleanDb.processedOperationKeys = (currentDb as any).processedOperationKeys || (cleanDb as any).processedOperationKeys;
+
+    cleanDb.lastBackupDate = new Date().toISOString();
+    cleanDb.version = (currentDb.version || 1) + 1;
 
     // Backup current DB before applying verified repair
     if (fs.existsSync(DB_FILE)) {
@@ -1053,6 +1135,17 @@ app.post('/api/repair/apply', (req, res) => {
       message: 'تم تطبيق تقرير الإصلاح المعتمد بأمان تام ودون المساس بالأرصدة أو الحركات الحقيقية'
     });
   } catch (err: any) {
+    if (err?.message?.includes('STALE_RESET_ID') || err?.code === 'STALE_RESET_ID') {
+      const currentDb = cachedDatabase || loadServerDb();
+      return res.status(409).json({
+        ok: false,
+        code: "STALE_RESET_ID",
+        error: "STALE_RESET_ID",
+        message: "Client resetId does not match server resetId. Full refresh required.",
+        serverResetId: currentDb.resetBoundary?.resetId,
+        serverBoundary: currentDb.resetBoundary
+      });
+    }
     res.status(500).json({ ok: false, error: err?.message || 'خطأ في معالجة طلب الإصلاح' });
   }
 });
