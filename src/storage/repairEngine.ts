@@ -53,9 +53,11 @@ export interface BalanceMismatchItem {
 }
 
 export interface StockDiscrepancyItem {
+  type: 'STOCK_DISCREPANCY';
   code: 'STOCK_DISCREPANCY';
   category: StockCategory;
   categoryLabel: string;
+  recordedStock: number;
   currentStock: number;
   calculatedStock: number;
   difference: number;
@@ -336,9 +338,11 @@ export function executeProductionRepair(
   const stockDiscrepancies: StockDiscrepancyItem[] = fullCheck.categoryAudits
     .filter(ca => !ca.isBalanced)
     .map(ca => ({
+      type: 'STOCK_DISCREPANCY',
       code: 'STOCK_DISCREPANCY',
       category: ca.category,
       categoryLabel: CATEGORY_LABELS[ca.category] || ca.category,
+      recordedStock: ca.currentStock,
       currentStock: ca.currentStock,
       calculatedStock: ca.theoreticalStock,
       difference: ca.difference,

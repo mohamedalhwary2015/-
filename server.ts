@@ -203,12 +203,15 @@ app.get('/api/database', (req, res) => {
   res.json(db);
 });
 
-export function requireMatchingResetId(clientResetId: unknown, serverResetId: unknown): void {
+export function requireMatchingResetId(
+  clientResetId: unknown,
+  serverResetId: unknown
+): void {
   if (
     typeof clientResetId !== "string" ||
     typeof serverResetId !== "string" ||
-    !clientResetId ||
-    !serverResetId ||
+    clientResetId.trim() === "" ||
+    serverResetId.trim() === "" ||
     clientResetId !== serverResetId
   ) {
     const error = new Error("STALE_RESET_ID");
@@ -232,7 +235,7 @@ app.post('/api/sync/transactions', (req, res) => {
 
     try {
       requireMatchingResetId(
-        req.body?.resetId ?? req.body?.resetBoundary?.resetId ?? req.body?.clientDb?.resetBoundary?.resetId,
+        req.body?.resetId ?? req.body?.clientDb?.resetBoundary?.resetId ?? req.body?.resetBoundary?.resetId,
         serverResetId
       );
     } catch (err: any) {
@@ -240,7 +243,7 @@ app.post('/api/sync/transactions', (req, res) => {
         ok: false,
         code: "STALE_RESET_ID",
         error: "STALE_RESET_ID",
-        message: "Client resetId does not match server resetId. Refresh required.",
+        message: "Client resetId does not match server resetId. Full refresh required.",
         serverResetId,
         serverBoundary: serverDb.resetBoundary
       });
@@ -338,7 +341,7 @@ app.post('/api/sync/transactions', (req, res) => {
           ok: false,
           code: "STALE_RESET_ID",
           error: "STALE_RESET_ID",
-          message: "Client resetId does not match server resetId. Refresh required.",
+          message: "Client resetId does not match server resetId. Full refresh required.",
           serverResetId,
           serverBoundary: serverDb.resetBoundary
         });
@@ -845,7 +848,7 @@ app.post('/api/sync', (req, res) => {
         ok: false,
         code: "STALE_RESET_ID",
         error: "STALE_RESET_ID",
-        message: "Client resetId does not match server resetId. Refresh required.",
+        message: "Client resetId does not match server resetId. Full refresh required.",
         serverResetId,
         serverBoundary: serverDb.resetBoundary
       });
@@ -877,7 +880,7 @@ app.post('/api/sync', (req, res) => {
         ok: false,
         code: "STALE_RESET_ID",
         error: "STALE_RESET_ID",
-        message: "Client resetId does not match server resetId. Refresh required.",
+        message: "Client resetId does not match server resetId. Full refresh required.",
         serverResetId: serverDb.resetBoundary?.resetId,
         serverBoundary: serverDb.resetBoundary
       });
@@ -905,7 +908,7 @@ app.post('/api/sync/changes', (req, res) => {
         ok: false,
         code: "STALE_RESET_ID",
         error: "STALE_RESET_ID",
-        message: "Client resetId does not match server resetId. Refresh required.",
+        message: "Client resetId does not match server resetId. Full refresh required.",
         serverResetId,
         serverBoundary: serverDb.resetBoundary
       });
@@ -924,7 +927,7 @@ app.post('/api/sync/changes', (req, res) => {
         ok: false,
         code: "STALE_RESET_ID",
         error: "STALE_RESET_ID",
-        message: "Client resetId does not match server resetId. Refresh required.",
+        message: "Client resetId does not match server resetId. Full refresh required.",
         serverResetId: serverDb.resetBoundary?.resetId,
         serverBoundary: serverDb.resetBoundary
       });
@@ -1003,7 +1006,7 @@ app.post('/api/repair/apply', (req, res) => {
         ok: false,
         code: "STALE_RESET_ID",
         error: "STALE_RESET_ID",
-        message: "Client resetId does not match server resetId. Refresh required.",
+        message: "Client resetId does not match server resetId. Full refresh required.",
         serverResetId,
         serverBoundary: currentDb.resetBoundary
       });
@@ -1100,4 +1103,6 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== 'test') {
+  startServer();
+}

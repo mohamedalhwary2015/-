@@ -9,6 +9,7 @@ import {
 } from '../src/storage/db';
 import { executeProductionRepair } from '../src/storage/repairEngine';
 import { mergeDatabasesNonDestructive } from '../src/storage/syncManager';
+import { requireMatchingResetId } from '../server';
 import { DatabaseSchema, StockCategory } from '../src/types';
 
 // In-memory mock server database simulator matching server.ts logic
@@ -238,6 +239,11 @@ describe('التحقق الإلزامي من الإصلاحات الثلاثة �
   // الاختبار 1: نفس resetId → PASS.
   test('1. نفس resetId → PASS', () => {
     const activeResetId = 'reset-cycle-2026-A';
+    // التحقق المباشر من الدالة الإلزامية requireMatchingResetId
+    assert.doesNotThrow(() => {
+      requireMatchingResetId(activeResetId, activeResetId);
+    }, 'يجب ألا تطلق requireMatchingResetId أي استثناء عند تطابق resetId');
+
     const serverDb = createMockServerDb(activeResetId);
     
     // جهاز عميل بنفس معرف resetId
@@ -264,6 +270,23 @@ describe('التحقق الإلزامي من الإصلاحات الثلاثة �
     const currentServerResetId = 'reset-cycle-SERVER-NEW';
     const oldClientResetId = 'reset-cycle-CLIENT-STALE';
     
+    // التحقق المباشر من الدالة الإلزامية requireMatchingResetId
+    assert.throws(
+      () => requireMatchingResetId(oldClientResetId, currentServerResetId),
+      (err: any) => err.code === 'STALE_RESET_ID',
+      'يجب أن تطلق requireMatchingResetId خطأ STALE_RESET_ID عند اختلاف resetId'
+    );
+    assert.throws(
+      () => requireMatchingResetId('', currentServerResetId),
+      (err: any) => err.code === 'STALE_RESET_ID',
+      'يجب أن تطلق requireMatchingResetId خطأ STALE_RESET_ID عند كون resetId فارغاً'
+    );
+    assert.throws(
+      () => requireMatchingResetId('   ', currentServerResetId),
+      (err: any) => err.code === 'STALE_RESET_ID',
+      'يجب أن تطلق requireMatchingResetId خطأ STALE_RESET_ID عند كون resetId مسافات فقط'
+    );
+
     const serverDb = createMockServerDb(currentServerResetId);
     const initialServerStock = serverDb.stocks.health_cards_male.currentStock;
 
@@ -414,6 +437,13 @@ describe('التحقق الإلزامي من الإصلاحات الثلاثة �
     // التحقق من التقرير التشخيصي
     assert.strictEqual(report.isDiagnosticOnly, true, 'يجب أن يكون التقرير تشخيصياً بحتاً');
     assert.strictEqual(report.summary.hasStockDiscrepancies, true, 'يجب كشف الفرق الحسابي');
+    assert.strictEqual(report.stockDiscrepancies.length > 0, true, 'يجب وجود discrepancy مسجلة');
+    const disc = report.stockDiscrepancies.find(d => d.category === 'birth_certificates');
+    assert.ok(disc, 'يجب وجود تفاصيل الفرق للصنف');
+    assert.strictEqual(disc?.type, 'STOCK_DISCREPANCY');
+    assert.strictEqual(disc?.recordedStock, 50);
+    assert.strictEqual(disc?.calculatedStock, 90);
+    assert.strictEqual(disc?.difference, -40);
     
     // التحقق الصارم أن currentStock لم يتغير وظل 50 تماماً
     const dbAfter = loadDatabase();

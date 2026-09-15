@@ -533,12 +533,15 @@ export function mergeServerDataSafely(localDb: DatabaseSchema, serverData: Parti
   return localDb;
 }
 
-export function requireMatchingResetId(clientResetId: unknown, serverResetId: unknown): void {
+export function requireMatchingResetId(
+  clientResetId: unknown,
+  serverResetId: unknown
+): void {
   if (
     typeof clientResetId !== "string" ||
     typeof serverResetId !== "string" ||
-    !clientResetId ||
-    !serverResetId ||
+    clientResetId.trim() === "" ||
+    serverResetId.trim() === "" ||
     clientResetId !== serverResetId
   ) {
     const error = new Error("STALE_RESET_ID");
