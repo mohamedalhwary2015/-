@@ -213,15 +213,15 @@ app.get('/api/database', (req, res) => {
   res.json(db);
 });
 
-export function requireMatchingResetId(
+function requireMatchingResetId(
   clientResetId: unknown,
   serverResetId: unknown
 ): void {
   if (
     typeof clientResetId !== "string" ||
     typeof serverResetId !== "string" ||
-    clientResetId.trim() === "" ||
-    serverResetId.trim() === "" ||
+    !clientResetId ||
+    !serverResetId ||
     clientResetId !== serverResetId
   ) {
     const error = new Error("STALE_RESET_ID");
@@ -229,6 +229,7 @@ export function requireMatchingResetId(
     throw error;
   }
 }
+export { requireMatchingResetId };
 
 /**
  * Transaction Sync Endpoint (Rules 10, 11, 12, 14, 15, 16, 19)
@@ -238,29 +239,21 @@ app.post('/api/sync/transactions', (req, res) => {
     const { deviceId, resetBoundary, transactions } = req.body || {};
     const currentServerDb = cachedDatabase || loadServerDb();
     const serverDb = currentServerDb;
+    const serverResetId = currentServerDb.resetBoundary?.resetId;
     const processedKeys = loadProcessedKeys();
     const acknowledgedKeys: string[] = [];
-
-    // 1. Strict Reset Boundary Check (Point 1: Server is ultimate source of truth, no old device queue accepted)
-    const serverResetId = currentServerDb.resetBoundary?.resetId;
 
     try {
       requireMatchingResetId(
         req.body?.resetId ||
-        req.body?.database?.resetBoundary?.resetId ||
-        resetBoundary?.resetId ||
-        req.body?.clientDb?.resetBoundary?.resetId,
-        serverResetId
+        req.body?.database?.resetBoundary?.resetId,
+        currentServerDb?.resetBoundary?.resetId
       );
     } catch (err: any) {
       return res.status(409).json({
         success: false,
-        ok: false,
         error: "STALE_RESET_ID",
-        code: "STALE_RESET_ID",
-        message: "Client resetId does not match current server resetId.",
-        serverResetId,
-        serverBoundary: currentServerDb.resetBoundary
+        message: "Client resetId does not match current server resetId."
       });
     }
 
@@ -318,20 +311,8 @@ app.post('/api/sync/transactions', (req, res) => {
       ) {
         return res.status(400).json({
           success: false,
-          ok: false,
           error: "INVALID_OPERATION_KEY",
-          code: "INVALID_OPERATION_KEY",
           message: "operationKey is required and must be non-empty."
-        });
-      }
-
-      if (item.operationKey.trim().length < 10) {
-        return res.status(400).json({
-          success: false,
-          ok: false,
-          error: "INVALID_OPERATION_KEY",
-          code: "INVALID_OPERATION_KEY",
-          message: "A valid stable operationKey is required."
         });
       }
 
@@ -916,6 +897,11 @@ app.post('/api/sync', (req, res) => {
     // 2. Non-destructive merge strictly protecting currentStock:
     // mergeDatabasesNonDestructive is called ONLY after resetId is verified
     if (clientDb) {
+      requireMatchingResetId(
+        clientDb?.resetBoundary?.resetId,
+        currentServerDb?.resetBoundary?.resetId
+      );
+
       const mergedDb = mergeDatabasesNonDestructive(
         currentServerDb,
         clientDb
@@ -964,20 +950,14 @@ app.post('/api/sync/changes', (req, res) => {
     try {
       requireMatchingResetId(
         req.body?.resetId ||
-        req.body?.database?.resetBoundary?.resetId ||
-        resetBoundary?.resetId ||
-        req.body?.clientDb?.resetBoundary?.resetId,
+        req.body?.database?.resetBoundary?.resetId,
         currentServerDb?.resetBoundary?.resetId
       );
     } catch (err: any) {
       return res.status(409).json({
         success: false,
-        ok: false,
         error: "STALE_RESET_ID",
-        code: "STALE_RESET_ID",
-        message: "Client belongs to an old reset cycle.",
-        serverResetId,
-        serverBoundary: currentServerDb.resetBoundary
+        message: "Client belongs to an old reset cycle."
       });
     }
 
@@ -1069,42 +1049,14 @@ app.post('/api/repair/apply', (req, res) => {
     const loadDatabaseFromDisk = loadServerDb;
     const saveDatabaseToDisk = saveServerDb;
 
-    const currentDb = cachedDatabase || loadDatabaseFromDisk();
+    const currentDb =
+      cachedDatabase || loadDatabaseFromDisk();
 
-    try {
-      requireMatchingResetId(
-        cleanDb?.resetBoundary?.resetId,
-        currentDb?.resetBoundary?.resetId
-      );
-    } catch (err: any) {
-      return res.status(409).json({
-        ok: false,
-        code: "STALE_RESET_ID",
-        error: "STALE_RESET_ID",
-        message: "Client resetId does not match server resetId. Full refresh required.",
-        serverResetId: currentDb.resetBoundary?.resetId,
-        serverBoundary: currentDb.resetBoundary
-      });
-    }
+    requireMatchingResetId(
+      cleanDb?.resetBoundary?.resetId,
+      currentDb?.resetBoundary?.resetId
+    );
 
-    const incomingStocks = cleanDb?.stocks ?? {};
-    const currentStocks = currentDb?.stocks ?? {};
-
-    for (const category of Object.keys(currentStocks)) {
-      const currentStock = Number((currentStocks as any)[category]?.currentStock ?? 0);
-      const incomingStock = Number(incomingStocks[category]?.currentStock ?? 0);
-
-      if (currentStock !== incomingStock) {
-        return res.status(409).json({
-          ok: false,
-          code: "REPAIR_REQUIRES_EXPLICIT_APPROVAL",
-          error: "REPAIR_REQUIRES_EXPLICIT_APPROVAL",
-          message: "Repair cannot modify currentStock."
-        });
-      }
-    }
-
-    // Repair must never overwrite real financial/stock state.
     cleanDb.stocks = currentDb.stocks;
     cleanDb.supplyTransactions = (currentDb as any).supplyTransactions || currentDb.supplies;
     cleanDb.supplies = currentDb.supplies;
@@ -1112,20 +1064,14 @@ app.post('/api/repair/apply', (req, res) => {
     cleanDb.dispenses = currentDb.dispenses;
     cleanDb.lateRegistrations = currentDb.lateRegistrations;
     cleanDb.tombstones = currentDb.tombstones;
-    cleanDb.processedOperationKeys = (currentDb as any).processedOperationKeys || (cleanDb as any).processedOperationKeys;
+    cleanDb.processedOperationKeys =
+      (currentDb as any).processedOperationKeys;
 
-    cleanDb.lastBackupDate = new Date().toISOString();
-    cleanDb.version = (currentDb.version || 1) + 1;
+    cleanDb.lastBackupDate =
+      new Date().toISOString();
 
-    // Backup current DB before applying verified repair
-    if (fs.existsSync(DB_FILE)) {
-      try {
-        const backupFile = path.join(DATA_DIR, `snapshot-backup-pre-repair-${Date.now()}.json`);
-        fs.copyFileSync(DB_FILE, backupFile);
-      } catch (err) {
-        console.warn('Backup error before repair apply:', err);
-      }
-    }
+    cleanDb.version =
+      (currentDb.version || 1) + 1;
 
     saveDatabaseToDisk(cleanDb);
 
