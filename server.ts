@@ -238,9 +238,12 @@ app.post('/api/sync/transactions', (req, res) => {
   try {
     const { deviceId, resetBoundary, transactions } = req.body || {};
     const currentServerDb = cachedDatabase || loadServerDb();
-    const serverDb = currentServerDb;
+    const serverDb: DatabaseSchema = JSON.parse(
+      JSON.stringify(currentServerDb)
+    );
     const serverResetId = currentServerDb.resetBoundary?.resetId;
     const processedKeys = loadProcessedKeys();
+    const tempProcessedKeys = new Set(processedKeys);
     const acknowledgedKeys: string[] = [];
 
     try {
@@ -329,10 +332,15 @@ app.post('/api/sync/transactions', (req, res) => {
         return res.status(400).json({ error: 'معرف الجهاز deviceId مفقود أو غير صالح', item });
       }
 
-      // Format check: operationKey format must start with ${operationType}:${recordId}
-      const expectedPrefix = `${operationType}:${recordId}`;
-      if (!opKey.startsWith(expectedPrefix)) {
-        return res.status(400).json({ error: 'صيغة مفتاح العملية operationKey غير متطابقة مع بيانات الحركة', item });
+      // Strict operationKey verification (Rule 3)
+      const expectedOperationKey = `${operationType}:${recordId}:${version}`;
+      if (opKey !== expectedOperationKey) {
+        return res.status(400).json({
+          success: false,
+          error: 'INVALID_OPERATION_KEY',
+          message: 'operationKey يجب أن يطابق operationType وrecordId وversion بشكل كامل.',
+          item
+        });
       }
 
       // No duplicate operationKey in the same batch
@@ -405,7 +413,7 @@ app.post('/api/sync/transactions', (req, res) => {
       const { operationKey, operationType, recordId, payload, transactionId, version } = item;
 
       // Idempotency check (Point 3): executed exactly once
-      if (processedKeys.has(operationKey)) {
+      if (tempProcessedKeys.has(operationKey)) {
         acknowledgedKeys.push(operationKey);
         continue;
       }
@@ -413,7 +421,7 @@ app.post('/api/sync/transactions', (req, res) => {
       // Check tombstones (Point 8): prevent resurrecting deleted records
       if (tombstoneSet.has(recordId) && !operationType.includes('DELETE')) {
         acknowledgedKeys.push(operationKey);
-        processedKeys.add(operationKey);
+        tempProcessedKeys.add(operationKey);
         continue;
       }
 
@@ -692,8 +700,12 @@ app.post('/api/sync/transactions', (req, res) => {
             const existing = serverDb.dispenses[idx];
             const stock = serverDb.stocks[existing.category as StockCategory];
             if (stock) {
-              stock.currentStock -= existing.quantity;
-              stock.totalDispensed -= existing.quantity;
+              stock.currentStock += existing.quantity;
+              stock.totalDispensed = Math.max(
+                0,
+                stock.totalDispensed - existing.quantity
+              );
+              stock.lastUpdated = new Date().toISOString();
             }
             serverDb.dispenses.splice(idx, 1);
             modified = true;
@@ -751,14 +763,14 @@ app.post('/api/sync/transactions', (req, res) => {
         }
       }
 
-      processedKeys.add(operationKey);
+      tempProcessedKeys.add(operationKey);
       acknowledgedKeys.push(operationKey);
     }
 
     if (modified) {
       saveServerDb(serverDb);
     }
-    saveProcessedKeys(processedKeys);
+    saveProcessedKeys(tempProcessedKeys);
 
     res.json({
       success: true,

@@ -148,18 +148,19 @@ export function generateOfficialMonthlyReport(
   for (const d of monthDispenses) {
     const amt = Number(d.collectedAmount) || 0;
 
-    // Strict Classification: Check transactionType and category
-    if (d.transactionType === 'health_card_male' || d.category === 'health_cards_male') {
+    // Strict Classification: Prioritize transactionType over category (Rule 16)
+    const txType = d.transactionType;
+    if (txType === 'health_card_male' || (!txType && d.category === 'health_cards_male')) {
       healthCardsMaleTotal += d.quantity;
       const fee = typeof d.collectedAmount === 'number' ? d.collectedAmount : amt;
       healthCardsMaleRevenue += fee;
       healthCardRevenue += fee;
-    } else if (d.transactionType === 'health_card_female' || d.category === 'health_cards_female') {
+    } else if (txType === 'health_card_female' || (!txType && d.category === 'health_cards_female')) {
       healthCardsFemaleTotal += d.quantity;
       const fee = typeof d.collectedAmount === 'number' ? d.collectedAmount : amt;
       healthCardsFemaleRevenue += fee;
       healthCardRevenue += fee;
-    } else if (d.transactionType === 'birth' || d.category === 'birth_certificates') {
+    } else if (txType === 'birth' || (!txType && d.category === 'birth_certificates')) {
       // Birth Certificates (Rule 18: Exact gender, never force default)
       if (d.gender === 'أنثى') {
         birthCertificatesFemale += d.quantity;
@@ -169,9 +170,9 @@ export function generateOfficialMonthlyReport(
         birthCertificatesUnspecified += d.quantity;
       }
       certificatesRevenue += amt;
-    } else if (d.transactionType === 'birth_notification' || d.category === 'birth_notifications') {
+    } else if (txType === 'birth_notification' || (!txType && d.category === 'birth_notifications')) {
       birthNotificationsTotal += d.quantity;
-    } else if (d.transactionType === 'death' || d.category === 'death_certificates') {
+    } else if (txType === 'death' || (!txType && d.category === 'death_certificates')) {
       // Death Certificates (Rule 18: Exact gender, never force default)
       if (d.gender === 'أنثى') {
         deathCertificatesFemale += d.quantity;
@@ -181,7 +182,7 @@ export function generateOfficialMonthlyReport(
         deathCertificatesUnspecified += d.quantity;
       }
       certificatesRevenue += amt;
-    } else if (d.transactionType === 'death_notification' || d.category === 'death_notifications') {
+    } else if (txType === 'death_notification' || (!txType && d.category === 'death_notifications')) {
       deathNotificationsTotal += d.quantity;
     } else {
       certificatesRevenue += amt;

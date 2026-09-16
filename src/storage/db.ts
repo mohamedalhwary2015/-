@@ -167,7 +167,7 @@ export function loadDatabase(): DatabaseSchema {
     }
 
     // Never use hardcoded employee
-    if (parsed.officeSettings.currentEmployee === 'أحمد محمود' || !parsed.officeSettings.currentEmployee) {
+    if (!parsed.officeSettings.currentEmployee || !parsed.officeSettings.currentEmployee.trim()) {
       parsed.officeSettings.currentEmployee = 'غير محدد';
     }
 
