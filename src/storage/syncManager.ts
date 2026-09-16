@@ -540,8 +540,8 @@ export function requireMatchingResetId(
   if (
     typeof clientResetId !== "string" ||
     typeof serverResetId !== "string" ||
-    clientResetId.trim() === "" ||
-    serverResetId.trim() === "" ||
+    !clientResetId ||
+    !serverResetId ||
     clientResetId !== serverResetId
   ) {
     const error = new Error("STALE_RESET_ID");
@@ -577,13 +577,8 @@ export function mergeDatabasesNonDestructive(
     throw error;
   }
 
-  const serverBoundary = serverDb.resetBoundary;
-  const clientBoundary = clientDb.resetBoundary;
-
-  const effectiveBoundary = serverBoundary || clientBoundary;
-
   const merged: DatabaseSchema = JSON.parse(JSON.stringify(serverDb));
-  merged.resetBoundary = effectiveBoundary;
+  merged.resetBoundary = serverDb.resetBoundary;
 
   // 2. Strict currentStock Protection:
   // currentStock is authoritative from serverDb and MUST NOT be changed by merge, timestamp comparison, or formulas!

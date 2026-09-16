@@ -802,13 +802,8 @@ function mergeDatabasesNonDestructive(
     throw error;
   }
 
-  const serverBoundary = serverDb.resetBoundary;
-  const clientBoundary = clientDb.resetBoundary;
-
-  const effectiveBoundary = serverBoundary || clientBoundary;
-
   const merged: DatabaseSchema = JSON.parse(JSON.stringify(serverDb));
-  merged.resetBoundary = effectiveBoundary;
+  merged.resetBoundary = serverDb.resetBoundary;
 
   // 1. currentStock Protection: Server stocks are authoritative, NEVER overwritten by client or formulas
   merged.stocks = JSON.parse(JSON.stringify(serverDb.stocks));
@@ -1057,23 +1052,37 @@ app.post('/api/repair/apply', (req, res) => {
       currentDb?.resetBoundary?.resetId
     );
 
-    cleanDb.stocks = currentDb.stocks;
-    cleanDb.supplyTransactions = (currentDb as any).supplyTransactions || currentDb.supplies;
-    cleanDb.supplies = currentDb.supplies;
-    cleanDb.dispenseRecords = (currentDb as any).dispenseRecords || currentDb.dispenses;
-    cleanDb.dispenses = currentDb.dispenses;
-    cleanDb.lateRegistrations = currentDb.lateRegistrations;
-    cleanDb.tombstones = currentDb.tombstones;
-    cleanDb.processedOperationKeys =
-      (currentDb as any).processedOperationKeys;
+    const incomingStocks = cleanDb?.stocks ?? {};
+    const currentStocks = currentDb?.stocks ?? {};
 
-    cleanDb.lastBackupDate =
-      new Date().toISOString();
+    for (const category of Object.keys(currentStocks)) {
+      const currentStock = Number((currentStocks as any)[category]?.currentStock ?? 0);
+      const incomingStock = Number(incomingStocks[category]?.currentStock ?? 0);
 
-    cleanDb.version =
-      (currentDb.version || 1) + 1;
+      if (currentStock !== incomingStock) {
+        return res.status(409).json({
+          ok: false,
+          code: "REPAIR_REQUIRES_EXPLICIT_APPROVAL",
+          error: "REPAIR_REQUIRES_EXPLICIT_APPROVAL",
+          message: "Repair cannot modify currentStock."
+        });
+      }
+    }
 
-    saveDatabaseToDisk(cleanDb);
+    // Backup current DB before applying verified repair
+    if (fs.existsSync(DB_FILE)) {
+      try {
+        const backupFile = path.join(DATA_DIR, `snapshot-backup-pre-repair-${Date.now()}.json`);
+        fs.copyFileSync(DB_FILE, backupFile);
+      } catch (err) {
+        console.warn('Backup error before repair apply:', err);
+      }
+    }
+
+    currentDb.lastUpdated = new Date().toISOString();
+    currentDb.version = (currentDb.version || 1) + 1;
+
+    saveDatabaseToDisk(currentDb);
 
     return res.json({
       ok: true,
