@@ -163,6 +163,13 @@ describe('Rule 29: الاختبارات الآلية الشاملة للحالا
     localDb.stocks.birth_certificates.currentStock = 50;
 
     const serverData: Partial<DatabaseSchema> = {
+      stocks: {
+        ...localDb.stocks,
+        birth_certificates: {
+          ...localDb.stocks.birth_certificates,
+          currentStock: 75
+        }
+      },
       supplies: [
         {
           id: 'sup-sync-idem',

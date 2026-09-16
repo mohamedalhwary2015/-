@@ -199,13 +199,32 @@ export async function executeAutoSync(
     const queue = getPendingQueue();
     const deviceId = getDeviceId();
 
+    const clientResetId = currentDb?.resetBoundary?.resetId;
+
+    if (
+      typeof clientResetId !== 'string' ||
+      !clientResetId.trim()
+    ) {
+      updateSyncStatus(
+        'failed',
+        'STALE_RESET_ID: لا يوجد resetId صالح للجهاز'
+      );
+
+      return {
+        success: false,
+        message: 'STALE_RESET_ID: لا يوجد معرف دورة قاعدة بيانات صالح على الجهاز',
+        pendingCount: queue.length
+      };
+    }
+
     // 1. Send pending transactions to backend
     const response = await fetch('/api/sync/transactions', {
       method: 'POST',
       headers: getApiAuthHeaders(),
       body: JSON.stringify({
         deviceId,
-        resetBoundary: currentDb.resetBoundary,
+        resetId: currentDb?.resetBoundary?.resetId,
+        resetBoundary: currentDb?.resetBoundary,
         transactions: queue
       })
     });
@@ -284,252 +303,241 @@ export async function executeAutoSync(
  * Merges server data into local database with version checks and tombstone enforcement
  * RULE 3: PROTECTS currentStock from arbitrary overwrite!
  */
-export function mergeServerDataSafely(localDb: DatabaseSchema, serverData: Partial<DatabaseSchema>): DatabaseSchema {
-  // Strict Reset Boundary Enforcement (Rules 6 & 7):
-  // If server has a new resetId from a Factory Reset, old offline records cannot be merged or preserved!
-  if (
-    serverData.resetBoundary?.resetId &&
-    localDb.resetBoundary?.resetId &&
-    serverData.resetBoundary.resetId !== localDb.resetBoundary.resetId
-  ) {
-    console.warn('STALE_RESET_ID: Server has a new resetId. Clearing stale offline queue and adopting server baseline.');
+export function mergeServerDataSafely(
+  localDb: DatabaseSchema,
+  serverData: Partial<DatabaseSchema>
+): DatabaseSchema {
+  const localResetId = localDb.resetBoundary?.resetId;
+
+  if (typeof localResetId !== 'string' || !localResetId.trim()) {
+    throw new Error('STALE_RESET_ID');
+  }
+
+  const serverResetId = serverData.resetBoundary?.resetId ?? localResetId;
+
+  if (typeof serverResetId !== 'string' || !serverResetId.trim()) {
+    throw new Error('STALE_RESET_ID');
+  }
+
+  // Server resetId is authoritative.
+  // A different reset cycle must never be merged into the local database.
+  if (serverResetId !== localResetId) {
     clearPendingQueue();
-    localDb.resetBoundary = serverData.resetBoundary;
-    localDb.supplies = (serverData.supplies || []).map(s => ({ ...s, syncStatus: 'synced' }));
-    localDb.dispenses = (serverData.dispenses || []).map(d => ({ ...d, syncStatus: 'synced' }));
-    localDb.lateRegistrations = (serverData.lateRegistrations || []).map(r => ({ ...r, syncStatus: 'synced' }));
-    localDb.tombstones = serverData.tombstones || [];
-    localDb.openingBalances = serverData.openingBalances || ({} as any);
-    if (serverData.stocks) {
-      localDb.stocks = JSON.parse(JSON.stringify(serverData.stocks));
-    }
-    if (serverData.auditLogs) {
-      localDb.auditLogs = serverData.auditLogs;
-    }
-    localDb.version = serverData.version || 1;
+
+    localDb.resetBoundary = JSON.parse(
+      JSON.stringify(serverData.resetBoundary)
+    );
+
+    localDb.stocks = JSON.parse(
+      JSON.stringify(serverData.stocks || localDb.stocks)
+    );
+
+    localDb.supplies = JSON.parse(
+      JSON.stringify(serverData.supplies || [])
+    ).map((x: any) => ({
+      ...x,
+      syncStatus: 'synced'
+    }));
+
+    localDb.dispenses = JSON.parse(
+      JSON.stringify(serverData.dispenses || [])
+    ).map((x: any) => ({
+      ...x,
+      syncStatus: 'synced'
+    }));
+
+    localDb.lateRegistrations = JSON.parse(
+      JSON.stringify(serverData.lateRegistrations || [])
+    ).map((x: any) => ({
+      ...x,
+      syncStatus: 'synced'
+    }));
+
+    localDb.openingBalances = JSON.parse(
+      JSON.stringify(serverData.openingBalances || {})
+    );
+
+    localDb.tombstones = JSON.parse(
+      JSON.stringify(serverData.tombstones || [])
+    );
+
+    localDb.auditLogs = JSON.parse(
+      JSON.stringify(serverData.auditLogs || [])
+    );
+
+    localDb.version = serverData.version || localDb.version || 1;
+
     saveDatabase(localDb, false);
+
     return localDb;
   }
 
-  let changed = false;
-
-  // 1. Tombstones merge & local active records cleanup (Rule 9 & Rule 22: prevents resurrection)
-  const localTombstones = new Set(localDb.tombstones.map(t => t.recordId));
-  for (const st of serverData.tombstones || []) {
-    if (!localTombstones.has(st.recordId)) {
-      localDb.tombstones.push(st);
-      localTombstones.add(st.recordId);
-      changed = true;
-    }
-
-    // If local terminal still holds this deleted record, remove it and adjust stock
-    const dspIdx = localDb.dispenses.findIndex(d => d.id === st.recordId);
-    if (dspIdx >= 0) {
-      const deletedDsp = localDb.dispenses[dspIdx];
-      const stock = localDb.stocks[deletedDsp.category];
-      if (stock) {
-        stock.currentStock += deletedDsp.quantity;
-        stock.totalDispensed -= deletedDsp.quantity;
-      }
-      localDb.dispenses.splice(dspIdx, 1);
-      changed = true;
-    }
-
-    const supIdx = localDb.supplies.findIndex(s => s.id === st.recordId);
-    if (supIdx >= 0) {
-      const deletedSup = localDb.supplies[supIdx];
-      const stock = localDb.stocks[deletedSup.category];
-      if (stock) {
-        stock.currentStock -= deletedSup.quantity;
-        stock.totalReceived -= deletedSup.quantity;
-      }
-      localDb.supplies.splice(supIdx, 1);
-      changed = true;
-    }
-
-    const lateIdx = localDb.lateRegistrations.findIndex(r => r.id === st.recordId);
-    if (lateIdx >= 0) {
-      localDb.lateRegistrations.splice(lateIdx, 1);
-      changed = true;
-    }
+  /*
+   * SAME RESET CYCLE
+   *
+   * Server stocks are authoritative.
+   * NEVER calculate or modify currentStock here.
+   */
+  if (serverData.stocks) {
+    localDb.stocks = JSON.parse(
+      JSON.stringify(serverData.stocks)
+    );
   }
 
-  // 1.5. Opening Balances merge (Pre-requisite for initial stock baseline before applying supplies/dispenses)
+  /*
+   * Server opening balances are authoritative metadata.
+   * Do NOT modify currentStock from opening balances here.
+   */
   if (serverData.openingBalances) {
-    localDb.openingBalances = localDb.openingBalances || ({} as any);
-    for (const [cat, ob] of Object.entries(serverData.openingBalances)) {
-      const stockCat = cat as StockCategory;
-      const localOb = localDb.openingBalances[stockCat];
-      if (!localOb || (ob && ob.quantity !== localOb.quantity)) {
-        localDb.openingBalances[stockCat] = ob;
-        const stock = localDb.stocks[stockCat];
-        if (stock) {
-          stock.openingStock = ob.quantity;
-          if (stock.currentStock === 0 && stock.totalReceived === 0 && stock.totalDispensed === 0) {
-            stock.currentStock = ob.quantity;
-          }
-        }
-        changed = true;
-      }
+    localDb.openingBalances = JSON.parse(
+      JSON.stringify(serverData.openingBalances)
+    );
+  }
+
+  /*
+   * Merge tombstones without touching stock.
+   */
+  const tombstoneMap = new Map<string, any>();
+
+  for (const t of localDb.tombstones || []) {
+    tombstoneMap.set(t.recordId, t);
+  }
+
+  for (const t of serverData.tombstones || []) {
+    tombstoneMap.set(t.recordId, t);
+  }
+
+  localDb.tombstones = Array.from(tombstoneMap.values());
+
+  const tombstoneSet = new Set(
+    localDb.tombstones.map(t => t.recordId)
+  );
+
+  /*
+   * Merge server supplies.
+   * IMPORTANT:
+   * Adding/removing a record here MUST NOT modify currentStock.
+   */
+  const supplyMap = new Map(
+    (localDb.supplies || []).map(s => [s.id, s])
+  );
+
+  for (const s of serverData.supplies || []) {
+    if (tombstoneSet.has(s.id) || s.isDeleted) {
+      continue;
+    }
+
+    const existing = supplyMap.get(s.id);
+
+    if (!existing || (s.version || 1) > (existing.version || 1)) {
+      supplyMap.set(s.id, {
+        ...s,
+        syncStatus: 'synced'
+      });
     }
   }
 
-  // 2. Supplies merge with version check
-  const tombstoneSet = new Set(localDb.tombstones.map(t => t.recordId));
-  const localSuppliesMap = new Map(localDb.supplies.map(s => [s.id, s]));
+  localDb.supplies = Array.from(supplyMap.values())
+    .filter(s => !tombstoneSet.has(s.id) && !s.isDeleted);
 
-  for (const sSup of serverData.supplies || []) {
-    if (tombstoneSet.has(sSup.id) || sSup.isDeleted) continue;
+  /*
+   * Merge server dispenses.
+   * IMPORTANT:
+   * Adding/removing a record here MUST NOT modify currentStock.
+   */
+  const dispenseMap = new Map(
+    (localDb.dispenses || []).map(d => [d.id, d])
+  );
 
-    const existing = localSuppliesMap.get(sSup.id);
-    if (!existing) {
-      // New confirmed supply from another terminal
-      localDb.supplies.unshift({ ...sSup, syncStatus: 'synced' });
-      const stock = localDb.stocks[sSup.category];
-      if (stock) {
-        stock.currentStock += sSup.quantity;
-        stock.totalReceived += sSup.quantity;
-      }
-      changed = true;
-    } else if ((sSup.version || 1) > (existing.version || 1)) {
-      // Newer version from server: handle category change or quantity difference
-      if (existing.category === sSup.category) {
-        const oldQty = existing.quantity;
-        const diff = sSup.quantity - oldQty;
-        const stock = localDb.stocks[sSup.category];
-        if (stock) {
-          stock.currentStock += diff;
-          stock.totalReceived += diff;
-        }
-      } else {
-        // Category changed on server! Revert old, apply new!
-        const oldStock = localDb.stocks[existing.category];
-        if (oldStock) {
-          oldStock.currentStock -= existing.quantity;
-          oldStock.totalReceived -= existing.quantity;
-        }
-        const newStock = localDb.stocks[sSup.category];
-        if (newStock) {
-          newStock.currentStock += sSup.quantity;
-          newStock.totalReceived += sSup.quantity;
-        }
-      }
-      Object.assign(existing, sSup, { syncStatus: 'synced' });
-      changed = true;
+  for (const d of serverData.dispenses || []) {
+    if (tombstoneSet.has(d.id) || d.isDeleted) {
+      continue;
+    }
+
+    const existing = dispenseMap.get(d.id);
+
+    if (!existing || (d.version || 1) > (existing.version || 1)) {
+      dispenseMap.set(d.id, {
+        ...d,
+        syncStatus: 'synced'
+      });
     }
   }
 
-  // 3. Dispenses merge with version check
-  const localDispensesMap = new Map(localDb.dispenses.map(d => [d.id, d]));
-  for (const sDsp of serverData.dispenses || []) {
-    if (tombstoneSet.has(sDsp.id) || sDsp.isDeleted) continue;
+  localDb.dispenses = Array.from(dispenseMap.values())
+    .filter(d => !tombstoneSet.has(d.id) && !d.isDeleted);
 
-    const existing = localDispensesMap.get(sDsp.id);
-    if (!existing) {
-      localDb.dispenses.unshift({ ...sDsp, syncStatus: 'synced' });
-      const stock = localDb.stocks[sDsp.category];
-      if (stock) {
-        stock.currentStock -= sDsp.quantity;
-        stock.totalDispensed += sDsp.quantity;
-      }
-      changed = true;
-    } else if ((sDsp.version || 1) > (existing.version || 1)) {
-      if (existing.category === sDsp.category) {
-        const oldQty = existing.quantity;
-        const diff = sDsp.quantity - oldQty;
-        const stock = localDb.stocks[sDsp.category];
-        if (stock) {
-          stock.currentStock -= diff;
-          stock.totalDispensed += diff;
-        }
-      } else {
-        // Category changed on server! Refund old, deduct from new!
-        const oldStock = localDb.stocks[existing.category];
-        if (oldStock) {
-          oldStock.currentStock += existing.quantity;
-          oldStock.totalDispensed -= existing.quantity;
-        }
-        const newStock = localDb.stocks[sDsp.category];
-        if (newStock) {
-          newStock.currentStock -= sDsp.quantity;
-          newStock.totalDispensed += sDsp.quantity;
-        }
-      }
-      Object.assign(existing, sDsp, { syncStatus: 'synced' });
-      changed = true;
+  /*
+   * Merge late registrations without touching stock.
+   */
+  const lateMap = new Map(
+    (localDb.lateRegistrations || []).map(r => [r.id, r])
+  );
+
+  for (const r of serverData.lateRegistrations || []) {
+    if (tombstoneSet.has(r.id) || r.isDeleted) {
+      continue;
+    }
+
+    const existing = lateMap.get(r.id);
+
+    if (!existing || (r.version || 1) > (existing.version || 1)) {
+      lateMap.set(r.id, {
+        ...r,
+        syncStatus: 'synced'
+      });
     }
   }
 
-  // 4. Late registrations merge
-  const localLateMap = new Map(localDb.lateRegistrations.map(r => [r.id, r]));
-  for (const sLate of serverData.lateRegistrations || []) {
-    if (tombstoneSet.has(sLate.id) || sLate.isDeleted) continue;
+  localDb.lateRegistrations = Array.from(lateMap.values())
+    .filter(r => !tombstoneSet.has(r.id) && !r.isDeleted);
 
-    const existing = localLateMap.get(sLate.id);
-    if (!existing) {
-      localDb.lateRegistrations.unshift({ ...sLate, syncStatus: 'synced' });
-      changed = true;
-    } else if ((sLate.version || 1) > (existing.version || 1)) {
-      Object.assign(existing, sLate, { syncStatus: 'synced' });
-      changed = true;
-    }
-  }
+  /*
+   * Audit logs are informational only.
+   * NEVER change currentStock because of an audit log.
+   */
+  if (Array.isArray(serverData.auditLogs)) {
+    const auditMap = new Map(
+      (localDb.auditLogs || []).map(a => [a.id, a])
+    );
 
-  // 5. Audit logs merge (Rule 4 & Rule 15: strictly controlled, no arbitrary stock changes from regular logs)
-  if (serverData.auditLogs && Array.isArray(serverData.auditLogs)) {
-    const localAuditIds = new Set((localDb.auditLogs || []).map(a => a.id));
-    const pendingQueue = getPendingQueue();
-    const pendingAdjustments = pendingQueue.filter(q => q.operationType === 'MANUAL_STOCK_ADJUSTMENT');
+    const pending = getPendingQueue();
 
-    for (const sa of serverData.auditLogs) {
-      if (!localAuditIds.has(sa.id)) {
-        localDb.auditLogs.unshift(sa);
-        localAuditIds.add(sa.id);
-
-        // Rule 4: ONLY audit logs that originate from a verified MANUAL_STOCK_ADJUSTMENT with transactionId can adjust stock
-        // A normal audit log (e.g. settings, reports, general audit) MUST NEVER touch currentStock!
-        const isVerifiedManualAdjustment =
-          (sa.operationType === 'MANUAL_STOCK_ADJUSTMENT' || sa.action === 'تسوية رصيد جرد يدوي صريح') &&
-          Boolean(sa.transactionId) &&
-          Boolean(sa.category) &&
-          typeof sa.newValue === 'number';
-
-        if (isVerifiedManualAdjustment && sa.category) {
-          const stock = localDb.stocks[sa.category];
-          // Rule 15: Conflict Resolution - Check if local terminal has a pending adjustment for the same category
-          const localConflictingPending = pendingAdjustments.find(p => p.payload?.category === sa.category);
-
-          if (localConflictingPending && localConflictingPending.payload?.newActualStock !== sa.newValue) {
-            // Conflict detected between two offline devices: Record SYNC_CONFLICT and protect local stock!
-            const conflictEntry = {
-              id: `conflict-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-              timestamp: new Date().toISOString(),
-              action: 'SYNC_CONFLICT',
-              category: sa.category,
-              details: `تعارض في تسوية الرصيد للصنف ${sa.category}: القيمة محلياً ${localConflictingPending.payload?.newActualStock} بينما الخادم ${sa.newValue}`,
-              performedBy: 'نظام فض النزاعات والمزامنة',
-              previousValue: localConflictingPending.payload?.newActualStock,
-              newValue: sa.newValue
-            };
-            localDb.auditLogs.unshift(conflictEntry);
-            localAuditIds.add(conflictEntry.id);
-          } else if (stock) {
-            const serverTime = new Date(sa.timestamp).getTime();
-            const localTime = stock.lastUpdated ? new Date(stock.lastUpdated).getTime() : 0;
-            if (serverTime >= localTime) {
-              stock.currentStock = sa.newValue;
-              stock.lastUpdated = sa.timestamp;
-            }
-          }
-        }
-        changed = true;
+    for (const a of serverData.auditLogs) {
+      if (
+        (a.operationType === 'MANUAL_STOCK_ADJUSTMENT' || a.action?.includes('تسوية')) &&
+        a.category &&
+        pending.some(p => p.operationType === 'MANUAL_STOCK_ADJUSTMENT' && p.payload?.category === a.category)
+      ) {
+        const conflictEntry = {
+          id: `conflict-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          timestamp: new Date().toISOString(),
+          action: 'SYNC_CONFLICT',
+          category: a.category,
+          itemId: a.category,
+          details: `تعارض تسوية رصيد جرد بين جهازين للصنف ${a.category}: تم رفض الاستبدال الصامت`,
+          performedBy: 'نظام الرقابة',
+          previousValue: localDb.stocks[a.category as StockCategory]?.currentStock,
+          newValue: a.newValue,
+          reason: 'تعارض جرد أوفلاين'
+        };
+        auditMap.set(conflictEntry.id, conflictEntry);
       }
+
+      auditMap.set(a.id, a);
     }
+
+    localDb.auditLogs = Array.from(auditMap.values());
   }
 
-  if (changed) {
-    saveDatabase(localDb, false);
-  }
+  localDb.resetBoundary = JSON.parse(
+    JSON.stringify(serverData.resetBoundary || localDb.resetBoundary)
+  );
+
+  localDb.version = serverData.version || localDb.version || 1;
+
+  saveDatabase(localDb, false);
+
   return localDb;
 }
 

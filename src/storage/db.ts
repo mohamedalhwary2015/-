@@ -152,12 +152,14 @@ export function loadDatabase(): DatabaseSchema {
     if (!Array.isArray(parsed.tombstones)) parsed.tombstones = [];
     if (!Array.isArray(parsed.auditLogs)) parsed.auditLogs = [];
 
-    if (!parsed.resetBoundary || !parsed.resetBoundary.resetTimestamp) {
-      parsed.resetBoundary = {
-        resetId: `rst-${Date.now().toString(36)}`,
-        resetTimestamp: new Date().toISOString(),
-        resetBy: 'نظام مكتب صحة سفلاق'
-      };
+    if (
+      !parsed.resetBoundary ||
+      typeof parsed.resetBoundary.resetId !== 'string' ||
+      !parsed.resetBoundary.resetId.trim()
+    ) {
+      throw new Error(
+        'INVALID_RESET_BOUNDARY: resetId is missing'
+      );
     }
 
     if (!parsed.officeSettings) {
@@ -172,6 +174,9 @@ export function loadDatabase(): DatabaseSchema {
     memoryDb = parsed;
     return parsed;
   } catch (err) {
+    if ((err as any)?.message?.includes('INVALID_RESET_BOUNDARY')) {
+      throw err;
+    }
     console.error('Failed to parse database from localStorage:', err);
     if (!memoryDb) memoryDb = createEmptyDatabase();
     return memoryDb;

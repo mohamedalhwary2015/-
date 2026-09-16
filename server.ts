@@ -245,7 +245,8 @@ app.post('/api/sync/transactions', (req, res) => {
 
     try {
       requireMatchingResetId(
-        req.body?.resetId ||
+        req.body?.resetId ??
+        req.body?.resetBoundary?.resetId ??
         req.body?.database?.resetBoundary?.resetId,
         currentServerDb?.resetBoundary?.resetId
       );
@@ -297,22 +298,14 @@ app.post('/api/sync/transactions', (req, res) => {
         return res.status(400).json({ error: 'معرف الحركة transactionId مفقود أو غير صالح', item });
       }
 
-      const txId = item.transactionId || (item as any).syncId;
-      const opType = item.operationType;
-      const recId =
-        item.recordId ||
-        item.payload?.id ||
-        (item.payload as any)?.recordId ||
-        '';
-
       if (
-        typeof item.operationKey !== "string" ||
+        typeof item.operationKey !== 'string' ||
         !item.operationKey.trim()
       ) {
         return res.status(400).json({
           success: false,
-          error: "INVALID_OPERATION_KEY",
-          message: "operationKey is required and must be non-empty."
+          error: 'INVALID_OPERATION_KEY',
+          message: 'operationKey is required and must be non-empty.'
         });
       }
 
@@ -349,7 +342,10 @@ app.post('/api/sync/transactions', (req, res) => {
       seenBatchKeys.add(opKey);
 
       // Reset Boundary check on transaction item level
-      const effectiveItemResetId = itemResetBoundary?.resetId || resetBoundary?.resetId || req.body?.resetId;
+      const effectiveItemResetId =
+        itemResetBoundary?.resetId ??
+        req.body?.resetId ??
+        resetBoundary?.resetId;
       try {
         requireMatchingResetId(effectiveItemResetId, serverResetId);
       } catch (err: any) {
@@ -866,70 +862,68 @@ function mergeDatabasesNonDestructive(
  */
 app.post('/api/sync', (req, res) => {
   try {
-    const { database: clientDbBody, clientDb: altClientDb, trigger, clientMeta } = req.body || {};
-    const clientDb = clientDbBody || altClientDb;
+    const currentServerDb =
+      cachedDatabase || loadServerDb();
 
-    const currentServerDb = cachedDatabase || loadServerDb();
-    const serverResetId = currentServerDb.resetBoundary?.resetId;
+    const clientResetId =
+      req.body?.resetId ??
+      req.body?.resetBoundary?.resetId ??
+      req.body?.database?.resetBoundary?.resetId ??
+      req.body?.clientDb?.resetBoundary?.resetId;
 
-    try {
-      requireMatchingResetId(
-        clientDb?.resetBoundary?.resetId ?? req.body?.resetId ?? req.body?.resetBoundary?.resetId,
-        serverResetId
-      );
-    } catch (err: any) {
-      return res.status(409).json({
-        ok: false,
-        success: false,
-        code: "STALE_RESET_ID",
-        error: "STALE_RESET_ID",
-        message: "Client resetId does not match current server resetId.",
-        serverResetId,
-        serverBoundary: currentServerDb.resetBoundary
-      });
-    }
+    requireMatchingResetId(
+      clientResetId,
+      currentServerDb?.resetBoundary?.resetId
+    );
 
-    // 2. Non-destructive merge strictly protecting currentStock:
-    // mergeDatabasesNonDestructive is called ONLY after resetId is verified
-    if (clientDb) {
-      requireMatchingResetId(
-        clientDb?.resetBoundary?.resetId,
-        currentServerDb?.resetBoundary?.resetId
-      );
-
-      const mergedDb = mergeDatabasesNonDestructive(
-        currentServerDb,
-        clientDb
-      );
-      saveServerDb(mergedDb);
-      return res.json({
-        ok: true,
-        success: true,
-        serverResetId,
-        serverData: mergedDb
-      });
-    }
+    /*
+     * Full database upload is NOT allowed.
+     *
+     * Database mutations must go through:
+     * /api/sync/transactions
+     *
+     * This endpoint is now a safe synchronization/read endpoint.
+     */
 
     return res.json({
       ok: true,
       success: true,
-      serverResetId,
-      serverData: currentServerDb
+      serverResetId:
+        currentServerDb.resetBoundary?.resetId,
+      serverData: currentServerDb,
+      message:
+        'تم جلب الحالة المركزية الحالية بأمان. تعديل قاعدة البيانات الكاملة غير مسموح عبر هذا المسار.'
     });
+
   } catch (err: any) {
-    if (err?.message?.includes('STALE_RESET_ID') || err?.code === 'STALE_RESET_ID') {
-      const serverDb = cachedDatabase || loadServerDb();
+    if (
+      err?.code === 'STALE_RESET_ID' ||
+      err?.message === 'STALE_RESET_ID'
+    ) {
+      const serverDb =
+        cachedDatabase || loadServerDb();
+
       return res.status(409).json({
         ok: false,
         success: false,
-        code: "STALE_RESET_ID",
-        error: "STALE_RESET_ID",
-        message: "Client resetId does not match current server resetId.",
-        serverResetId: serverDb.resetBoundary?.resetId,
-        serverBoundary: serverDb.resetBoundary
+        code: 'STALE_RESET_ID',
+        error: 'STALE_RESET_ID',
+        message:
+          'الجهاز ينتمي إلى دورة تصفير قديمة. يجب جلب الحالة الحالية من الخادم.',
+        serverResetId:
+          serverDb.resetBoundary?.resetId,
+        serverBoundary:
+          serverDb.resetBoundary
       });
     }
-    res.status(500).json({ error: err?.message || 'خطأ في معالجة المزامنة' });
+
+    return res.status(500).json({
+      ok: false,
+      success: false,
+      error:
+        err?.message ||
+        'خطأ في المزامنة'
+    });
   }
 });
 
@@ -1023,85 +1017,62 @@ app.post('/api/database/factory-reset', (req, res) => {
 });
 
 /**
- * Controlled Production Repair Apply Endpoint (Rule 9)
+ * Controlled Production Repair Apply Endpoint
  * STRICT MANDATES:
- * - NEVER allows cleanDb to overwrite currentStock or recalculate balances.
- * - Enforces resetId consistency via requireMatchingResetId.
- * - Protects operational data: stocks, supplies, dispenses, lateRegistrations, tombstones.
+ * - Automatic repair disabled for safety to protect live stock and confirmed movements.
+ * - Diagnostic only.
  */
 app.post('/api/repair/apply', (req, res) => {
   try {
-    const { database: cleanDbBody, cleanDb: altCleanDb, reportMarkdown, removedCount, deviceId, explicitApproval, operatorName } = req.body || {};
-    const cleanDb = cleanDbBody || altCleanDb;
-    if (!cleanDb || typeof cleanDb !== 'object') {
-      return res.status(400).json({
-        ok: false,
-        code: 'INVALID_REPAIR_PAYLOAD',
-        error: 'بيانات الإصلاح غير صالحة'
-      });
-    }
-
-    const loadDatabaseFromDisk = loadServerDb;
-    const saveDatabaseToDisk = saveServerDb;
-
     const currentDb =
-      cachedDatabase || loadDatabaseFromDisk();
+      cachedDatabase || loadServerDb();
+
+    const clientResetId =
+      req.body?.resetId ??
+      req.body?.database?.resetBoundary?.resetId ??
+      req.body?.cleanDb?.resetBoundary?.resetId;
 
     requireMatchingResetId(
-      cleanDb?.resetBoundary?.resetId,
+      clientResetId,
       currentDb?.resetBoundary?.resetId
     );
 
-    const incomingStocks = cleanDb?.stocks ?? {};
-    const currentStocks = currentDb?.stocks ?? {};
-
-    for (const category of Object.keys(currentStocks)) {
-      const currentStock = Number((currentStocks as any)[category]?.currentStock ?? 0);
-      const incomingStock = Number(incomingStocks[category]?.currentStock ?? 0);
-
-      if (currentStock !== incomingStock) {
-        return res.status(409).json({
-          ok: false,
-          code: "REPAIR_REQUIRES_EXPLICIT_APPROVAL",
-          error: "REPAIR_REQUIRES_EXPLICIT_APPROVAL",
-          message: "Repair cannot modify currentStock."
-        });
-      }
-    }
-
-    // Backup current DB before applying verified repair
-    if (fs.existsSync(DB_FILE)) {
-      try {
-        const backupFile = path.join(DATA_DIR, `snapshot-backup-pre-repair-${Date.now()}.json`);
-        fs.copyFileSync(DB_FILE, backupFile);
-      } catch (err) {
-        console.warn('Backup error before repair apply:', err);
-      }
-    }
-
-    currentDb.lastUpdated = new Date().toISOString();
-    currentDb.version = (currentDb.version || 1) + 1;
-
-    saveDatabaseToDisk(currentDb);
-
-    return res.json({
-      ok: true,
-      success: true,
-      message: 'تم تطبيق تقرير الإصلاح المعتمد بأمان تام ودون المساس بالأرصدة أو الحركات الحقيقية'
+    return res.status(409).json({
+      ok: false,
+      success: false,
+      code: 'REPAIR_DISABLED_FOR_SAFETY',
+      error: 'REPAIR_DISABLED_FOR_SAFETY',
+      message:
+        'الإصلاح التلقائي لقاعدة البيانات معطل لحماية الأرصدة والحركات الحقيقية. استخدم التشخيص فقط ثم نفذ تسوية يدوية صريحة إذا لزم الأمر.'
     });
+
   } catch (err: any) {
-    if (err?.message?.includes('STALE_RESET_ID') || err?.code === 'STALE_RESET_ID') {
-      const currentDb = cachedDatabase || loadServerDb();
+    if (
+      err?.code === 'STALE_RESET_ID' ||
+      err?.message === 'STALE_RESET_ID'
+    ) {
+      const currentDb =
+        cachedDatabase || loadServerDb();
+
       return res.status(409).json({
         ok: false,
-        code: "STALE_RESET_ID",
-        error: "STALE_RESET_ID",
-        message: "Client resetId does not match server resetId. Full refresh required.",
-        serverResetId: currentDb.resetBoundary?.resetId,
-        serverBoundary: currentDb.resetBoundary
+        success: false,
+        code: 'STALE_RESET_ID',
+        error: 'STALE_RESET_ID',
+        message:
+          'رفض الإصلاح لأن الجهاز يحمل Reset ID قديمًا.',
+        serverResetId:
+          currentDb.resetBoundary?.resetId
       });
     }
-    res.status(500).json({ ok: false, error: err?.message || 'خطأ في معالجة طلب الإصلاح' });
+
+    return res.status(500).json({
+      ok: false,
+      success: false,
+      error:
+        err?.message ||
+        'خطأ في طلب الإصلاح'
+    });
   }
 });
 
@@ -1151,6 +1122,12 @@ async function startServer() {
   });
 }
 
-if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== 'test') {
+const isDirectRun = Boolean(
+  process.argv[1] &&
+  (process.argv[1].endsWith('server.ts') || process.argv[1].endsWith('server.cjs')) &&
+  !process.argv.some(arg => arg.includes('test'))
+);
+
+if (isDirectRun) {
   startServer();
 }

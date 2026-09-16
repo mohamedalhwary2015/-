@@ -53,7 +53,11 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
     filterMode === 'health_cards' ? 'health_cards_male' : filterMode === 'death_certificates' ? 'death_certificates' : filterMode === 'notifications' ? 'birth_notifications' : 'birth_certificates'
   );
   const [quantity, setQuantity] = useState<number>(1);
-  const [collectedAmount, setCollectedAmount] = useState<number | ''>('');
+  const [collectedAmount, setCollectedAmount] = useState<number | ''>(
+    filterMode === 'health_cards'
+      ? (db.officeSettings?.healthCardMaleFee ?? 50)
+      : (filterMode === 'notifications' ? 0 : (db.officeSettings?.birthCertFee ?? 0))
+  );
   const [receiptNumber, setReceiptNumber] = useState('');
   const [serialNumber, setSerialNumber] = useState('');
   const [dispensedBy, setDispensedBy] = useState(db.officeSettings?.currentEmployee || 'غير محدد');
@@ -67,17 +71,17 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
     if (t === 'health_card_male') {
       setCategory('health_cards_male');
       setGender('ذكر');
-      setCollectedAmount('');
+      setCollectedAmount(db.officeSettings?.healthCardMaleFee ?? 50);
     } else if (t === 'health_card_female') {
       setCategory('health_cards_female');
       setGender('أنثى');
-      setCollectedAmount('');
+      setCollectedAmount(db.officeSettings?.healthCardFemaleFee ?? 50);
     } else if (t === 'birth') {
       setCategory('birth_certificates');
-      setCollectedAmount('');
+      setCollectedAmount(db.officeSettings?.birthCertFee ?? 0);
     } else if (t === 'death') {
       setCategory('death_certificates');
-      setCollectedAmount('');
+      setCollectedAmount(db.officeSettings?.deathCertFee ?? 0);
     } else if (t === 'birth_notification') {
       setCategory('birth_notifications');
       setCollectedAmount(0);
@@ -97,17 +101,17 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
       setTransactionType('health_card_male');
       setCategory('health_cards_male');
       setGender('ذكر');
-      setCollectedAmount('');
+      setCollectedAmount(db.officeSettings?.healthCardMaleFee ?? 50);
     } else if (filterMode === 'birth_certificates') {
       setTransactionType('birth');
       setCategory('birth_certificates');
       setGender('ذكر');
-      setCollectedAmount('');
+      setCollectedAmount(db.officeSettings?.birthCertFee ?? 0);
     } else if (filterMode === 'death_certificates') {
       setTransactionType('death');
       setCategory('death_certificates');
       setGender('غير محدد');
-      setCollectedAmount('');
+      setCollectedAmount(db.officeSettings?.deathCertFee ?? 0);
     } else if (filterMode === 'notifications') {
       setTransactionType('birth_notification');
       setCategory('birth_notifications');
@@ -117,7 +121,7 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
       setTransactionType('birth');
       setCategory('birth_certificates');
       setGender('ذكر');
-      setCollectedAmount('');
+      setCollectedAmount(db.officeSettings?.birthCertFee ?? 0);
     }
     setQuantity(1);
     setReceiptNumber('');
