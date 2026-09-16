@@ -196,16 +196,14 @@ function processTransactionsOnServer(
           const diff = newActual - oldStock;
           const prevStockInPayload = typeof payload.previousStock === 'number'
             ? payload.previousStock
-            : (typeof payload.oldStock === 'number' ? payload.oldStock : oldStock);
+            : (typeof payload.oldStock === 'number' ? payload.oldStock : null);
 
-          // Conflict detection
-          const hasConflictingAdjustment = prevStockInPayload !== oldStock && serverDb.auditLogs.some(a =>
-            a.category === cat &&
-            (a.operationType === 'MANUAL_STOCK_ADJUSTMENT' || a.action === 'تسوية رصيد جرد يدوي صريح') &&
-            a.transactionId !== transactionId
-          );
+          if (typeof prevStockInPayload !== 'number' || !Number.isFinite(prevStockInPayload)) {
+            break;
+          }
 
-          if (hasConflictingAdjustment) {
+          // Strict conflict check: prevStockInPayload !== oldStock
+          if (prevStockInPayload !== oldStock) {
             serverDb.auditLogs.unshift({
               id: `conflict-${Date.now()}`,
               timestamp: new Date().toISOString(),
@@ -225,6 +223,7 @@ function processTransactionsOnServer(
               deviceId: payload.deviceId || deviceId,
               operationType: 'MANUAL_STOCK_ADJUSTMENT'
             });
+            break;
           } else {
             if (payload.reason === 'damaged' && diff < 0) {
               stock.damagedOrCancelled += Math.abs(diff);
@@ -267,7 +266,7 @@ function processTransactionsOnServer(
           )
         );
         const existingOb = serverDb.openingBalances?.[cat];
-        const hasConflictingOb = Boolean(existingOb && existingOb.quantity !== qty && existingOb.quantity > 0);
+        const hasConflictingOb = Boolean(existingOb && Number(existingOb.quantity) !== Number(qty));
 
         if (hasConflictingOb) {
           serverDb.auditLogs.unshift({
@@ -285,6 +284,7 @@ function processTransactionsOnServer(
             deviceId: payload.deviceId || deviceId,
             operationType: 'OPENING_BALANCE_SET'
           });
+          break;
         } else {
           serverDb.openingBalances = serverDb.openingBalances || ({} as any);
           serverDb.openingBalances[cat] = {
@@ -690,8 +690,11 @@ describe('Final Audit: اختبار سيناريوهات التدقيق الإل
 
     processTransactionsOnServer(serverDb, [opbTx], processedKeys, resetBoundary, 'device-C');
 
-    // Opening stock property is updated, but currentStock MUST NOT be replaced with 50!
-    assert.equal(serverDb.stocks.birth_certificates.openingStock, 50);
+    // Rule 4 / Test 3: existingOpeningBalance (0) !== incoming (50) is a conflict!
+    // Silent overwrite is prevented, SYNC_CONFLICT is logged, openingBalances is not overwritten silently,
+    // and currentStock MUST NOT be replaced!
+    const conflictLog = serverDb.auditLogs.find(a => a.action === 'SYNC_CONFLICT');
+    assert.ok(conflictLog, 'يجب تسجيل SYNC_CONFLICT لمنع الاستبدال الصامت لرصيد أول المدة');
     assert.equal(serverDb.stocks.birth_certificates.currentStock, 250, 'يجب حماية الرصيد الفعلي الحالي وعدم استبداله');
   });
 

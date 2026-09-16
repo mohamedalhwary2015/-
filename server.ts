@@ -389,7 +389,7 @@ app.post('/api/sync/transactions', (req, res) => {
         if (!payload.category || !STOCK_CATEGORIES.includes(payload.category as StockCategory)) {
           return res.status(400).json({ error: 'صنف التسوية اليدوية غير صالح', item });
         }
-        const newActual = Number(payload.newActualStock);
+        const newActual = Number(payload.newActualStock ?? payload.newStock);
         if (!Number.isFinite(newActual) || newActual < 0) {
           return res.status(400).json({ error: 'الرصيد الفعلي الجديد للتسوية غير صالح أو سالب', item });
         }
@@ -434,29 +434,44 @@ app.post('/api/sync/transactions', (req, res) => {
             const oldStock = stock.currentStock;
             const newActual = Number(payload.newStock ?? payload.newActualStock) || 0;
             const diff = newActual - oldStock;
-            const prevStockInPayload = typeof payload.oldStock === 'number'
-              ? payload.oldStock
-              : (typeof payload.previousStock === 'number' ? payload.previousStock : oldStock);
+            const prevStockInPayload =
+              typeof payload.oldStock === 'number'
+                ? payload.oldStock
+                : (
+                  typeof payload.previousStock === 'number'
+                    ? payload.previousStock
+                    : null
+                );
+
+            if (
+              typeof prevStockInPayload !== 'number' ||
+              !Number.isFinite(prevStockInPayload)
+            ) {
+              return res.status(409).json({
+                success: false,
+                code: 'SYNC_CONFLICT',
+                error: 'SYNC_CONFLICT',
+                message:
+                  'لا يمكن اعتماد التسوية اليدوية لأن الرصيد السابق للجهاز غير موجود أو غير صالح.'
+              });
+            }
+
             const creator = payload.createdBy || payload.performedBy || 'غير محدد';
             const opId = payload.operationId || recordId;
 
-            // Point 6: Conflict detection for offline devices
-            // If another device changed stock while this device was offline (baseline mismatch and distinct adjustment exists)
-            const hasConflictingAdjustment = prevStockInPayload !== oldStock && serverDb.auditLogs.some((a: any) =>
-              (a.category === cat || a.itemId === cat) &&
-              (a.operationType === 'MANUAL_STOCK_ADJUSTMENT' || a.action === 'تسوية رصيد جرد يدوي صريح') &&
-              a.transactionId !== transactionId
-            );
-
-            if (hasConflictingAdjustment) {
-              // Register SYNC_CONFLICT - DO NOT silently overwrite!
+            // Strict baseline snapshot conflict check: prevStockInPayload !== oldStock
+            if (prevStockInPayload !== oldStock) {
               serverDb.auditLogs.unshift({
-                id: `conflict-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                id: `conflict-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
                 timestamp: new Date().toISOString(),
                 action: 'SYNC_CONFLICT',
                 category: cat,
                 itemId: cat,
-                details: `تعارض تسوية رصيد جرد بين جهازين للصنف (${cat}): الرصيد على الخادم (${oldStock}) بينما القيمة الواردة من الجهاز (${newActual})، تم رفض الاستبدال الصامت`,
+                details:
+                  `تم رفض تسوية جرد أوفلاين بسبب تغير الرصيد المركزي. ` +
+                  `رصيد الجهاز وقت التسوية: ${prevStockInPayload} ` +
+                  `، الرصيد الحالي على الخادم: ${oldStock} ` +
+                  `، الرصيد الفعلي المطلوب: ${newActual}.`,
                 performedBy: creator,
                 createdBy: creator,
                 previousValue: oldStock,
@@ -464,45 +479,53 @@ app.post('/api/sync/transactions', (req, res) => {
                 oldStock,
                 newStock: newActual,
                 newActualStock: newActual,
-                difference: diff,
+                difference: newActual - oldStock,
                 reason: payload.reason,
-                notes: 'تم رفض الاستبدال الصامت للرصيد الفعلي بسبب وجود تعارض جرد أوفلاين',
+                notes:
+                  'تم رفض التسوية لأن الرصيد المركزي تغير بعد آخر حالة معروفة للجهاز.',
                 transactionId,
                 operationId: opId,
                 operationKey,
                 deviceId: payload.deviceId || deviceId || 'غير محدد',
                 operationType: 'MANUAL_STOCK_ADJUSTMENT'
               });
-            } else {
-              if (payload.reason === 'damaged' && diff < 0) {
-                stock.damagedOrCancelled += Math.abs(diff);
-              }
-              stock.currentStock = newActual;
-              stock.lastUpdated = new Date().toISOString();
-              serverDb.auditLogs.unshift({
-                id: payload.id || `audit-${Date.now()}`,
-                timestamp: payload.timestamp || new Date().toISOString(),
-                action: 'تسوية رصيد جرد يدوي صريح',
-                category: cat,
-                itemId: cat,
-                details: `تعديل الرصيد الفعلي من ${oldStock} إلى ${newActual} (الفارق: ${diff > 0 ? `+${diff}` : diff}) - السبب: ${payload.reason} - ${payload.notes || ''}`,
-                performedBy: creator,
-                createdBy: creator,
-                previousValue: oldStock,
-                newValue: newActual,
-                oldStock,
-                newStock: newActual,
-                newActualStock: newActual,
-                difference: diff,
-                reason: payload.reason,
-                notes: payload.notes || '',
-                transactionId,
-                operationId: opId,
-                operationKey,
-                deviceId: payload.deviceId || deviceId || 'غير محدد',
-                operationType: 'MANUAL_STOCK_ADJUSTMENT'
-              });
+
+              modified = true;
+
+              tempProcessedKeys.add(operationKey);
+              acknowledgedKeys.push(operationKey);
+
+              continue;
             }
+
+            if (payload.reason === 'damaged' && diff < 0) {
+              stock.damagedOrCancelled += Math.abs(diff);
+            }
+            stock.currentStock = newActual;
+            stock.lastUpdated = new Date().toISOString();
+            serverDb.auditLogs.unshift({
+              id: payload.id || `audit-${Date.now()}`,
+              timestamp: payload.timestamp || new Date().toISOString(),
+              action: 'تسوية رصيد جرد يدوي صريح',
+              category: cat,
+              itemId: cat,
+              details: `تعديل الرصيد الفعلي من ${oldStock} إلى ${newActual} (الفارق: ${diff > 0 ? `+${diff}` : diff}) - السبب: ${payload.reason} - ${payload.notes || ''}`,
+              performedBy: creator,
+              createdBy: creator,
+              previousValue: oldStock,
+              newValue: newActual,
+              oldStock,
+              newStock: newActual,
+              newActualStock: newActual,
+              difference: diff,
+              reason: payload.reason,
+              notes: payload.notes || '',
+              transactionId,
+              operationId: opId,
+              operationKey,
+              deviceId: payload.deviceId || deviceId || 'غير محدد',
+              operationType: 'MANUAL_STOCK_ADJUSTMENT'
+            });
             modified = true;
           }
           break;
@@ -522,7 +545,10 @@ app.post('/api/sync/transactions', (req, res) => {
             )
           );
           const existingOb = serverDb.openingBalances?.[cat];
-          const hasConflictingOb = Boolean(existingOb && existingOb.quantity !== qty && existingOb.quantity > 0);
+          const hasConflictingOb = Boolean(
+            existingOb &&
+            Number(existingOb.quantity) !== Number(qty)
+          );
 
           if (hasConflictingOb) {
             // Register conflict instead of silent overwrite (Rule 8)
@@ -544,6 +570,10 @@ app.post('/api/sync/transactions', (req, res) => {
               deviceId: payload.deviceId || deviceId || 'غير محدد',
               operationType: 'OPENING_BALANCE_SET'
             });
+            modified = true;
+            tempProcessedKeys.add(operationKey);
+            acknowledgedKeys.push(operationKey);
+            continue;
           } else {
             serverDb.openingBalances = serverDb.openingBalances || ({} as any);
             serverDb.openingBalances[cat] = {
@@ -577,8 +607,8 @@ app.post('/api/sync/transactions', (req, res) => {
               deviceId: payload.deviceId || deviceId || 'غير محدد',
               operationType: 'OPENING_BALANCE_SET'
             });
+            modified = true;
           }
-          modified = true;
           break;
         }
         case 'SUPPLY_ADD': {
