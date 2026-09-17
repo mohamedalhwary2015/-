@@ -22,7 +22,7 @@ const DATA_DIR = process.env.DATA_DIR || path.join(ROOT_DIR, 'data');
 const DB_FILE = path.join(DATA_DIR, 'database.json');
 const PROCESSED_KEYS_FILE = path.join(DATA_DIR, 'processedTransactions.json');
 
-const app = express();
+export const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
 app.use(cors());
@@ -91,12 +91,30 @@ function createServerEmptyDatabase(): DatabaseSchema {
 }
 
 let cachedDatabase: DatabaseSchema | null = null;
+let memoryProcessedKeys: Set<string> | null = null;
+
+export function setServerDbForTesting(db: DatabaseSchema, processedKeys?: Set<string>): void {
+  cachedDatabase = db;
+  if (processedKeys) {
+    memoryProcessedKeys = processedKeys;
+  }
+}
+
+export function resetServerDbForTesting(): void {
+  cachedDatabase = createServerEmptyDatabase();
+  memoryProcessedKeys = new Set();
+}
+
+export function getServerDbForTesting(): DatabaseSchema {
+  return cachedDatabase || loadServerDb();
+}
 
 function loadDatabaseFromDisk(): DatabaseSchema {
   return loadServerDb();
 }
 
 function loadServerDb(): DatabaseSchema {
+  if (cachedDatabase) return cachedDatabase;
   try {
     if (!fs.existsSync(DB_FILE)) {
       const fresh = createServerEmptyDatabase();
@@ -121,12 +139,14 @@ function saveServerDb(db: DatabaseSchema): void {
   cachedDatabase = db;
   db.lastUpdated = new Date().toISOString();
   db.version = (db.version || 1) + 1;
+  if (process.env.NODE_ENV === 'test') return;
   const tempFile = `${DB_FILE}.tmp.${Date.now()}`;
   fs.writeFileSync(tempFile, JSON.stringify(db, null, 2), 'utf-8');
   fs.renameSync(tempFile, DB_FILE);
 }
 
 function loadProcessedKeys(): Set<string> {
+  if (memoryProcessedKeys) return memoryProcessedKeys;
   try {
     if (!fs.existsSync(PROCESSED_KEYS_FILE)) return new Set();
     const raw = fs.readFileSync(PROCESSED_KEYS_FILE, 'utf-8');
@@ -138,6 +158,11 @@ function loadProcessedKeys(): Set<string> {
 }
 
 function saveProcessedKeys(keys: Set<string>): void {
+  if (memoryProcessedKeys) {
+    memoryProcessedKeys = keys;
+    return;
+  }
+  if (process.env.NODE_ENV === 'test') return;
   try {
     fs.writeFileSync(PROCESSED_KEYS_FILE, JSON.stringify(Array.from(keys)), 'utf-8');
   } catch (err) {
