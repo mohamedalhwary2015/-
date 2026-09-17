@@ -110,7 +110,18 @@ function processServerBatch(
               : (typeof payload.previousStock === 'number' ? payload.previousStock : null);
 
           if (typeof prevStockInPayload !== 'number' || !Number.isFinite(prevStockInPayload)) {
-            return { status: 409, acknowledgedKeys, serverDb, error: 'SYNC_CONFLICT_MISSING_BASELINE' };
+            serverDb.auditLogs.unshift({
+              id: `audit-conflict-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+              timestamp: new Date().toISOString(),
+              action: 'SYNC_CONFLICT',
+              category: cat,
+              details: `تعارض تسوية يدوية: غياب لقطة الأساس (Snapshot) السابقة من الجهاز. تم رفض العملية وحماية رصيد الخادم.`,
+              performedBy: item.deviceId || deviceId,
+              previousValue: oldStock
+            });
+            processedKeys.add(operationKey);
+            acknowledgedKeys.push(operationKey);
+            continue;
           }
 
           // Rule 1: Strict baseline snapshot check
@@ -575,5 +586,45 @@ describe('الاختبارات الـ 7 الإلزامية للتعارض وال
     const invalidResult = processServerBatch(serverDb, [invalidTx], processedKeys, serverDb.resetBoundary);
     assert.equal(invalidResult.status, 400, 'operationKey غير المطابق للنسخة يجب أن يُرفض بكود 400');
     assert.equal(invalidResult.error, 'INVALID_OPERATION_KEY');
+  });
+
+  // TEST 8: Missing Snapshot Baseline in MANUAL_STOCK_ADJUSTMENT
+  it('TEST 8: newActualStock = 90 without previousStock or oldStock -> رفض، SYNC_CONFLICT، عدم تغيير currentStock', () => {
+    const serverDb = createEmptyDatabase();
+    serverDb.stocks.birth_certificates.currentStock = 100;
+    const processedKeys = new Set<string>();
+
+    const tx: SyncTransactionItem = {
+      transactionId: 'tx-adj-no-snapshot',
+      operationKey: 'MANUAL_STOCK_ADJUSTMENT:adj-nosnap:1',
+      recordId: 'adj-nosnap',
+      operationType: 'MANUAL_STOCK_ADJUSTMENT',
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      deviceId: 'dev-client-missing-snapshot',
+      resetBoundary: { ...serverDb.resetBoundary },
+      payload: {
+        category: 'birth_certificates',
+        // previousStock and oldStock are both missing!
+        newActualStock: 90,
+        reason: 'تسوية بدون لقطة أساس',
+        performedBy: 'أمين عهدة'
+      }
+    };
+
+    const result = processServerBatch(serverDb, [tx], processedKeys, serverDb.resetBoundary);
+
+    assert.equal(result.status, 200);
+    assert.equal(
+      serverDb.stocks.birth_certificates.currentStock,
+      100,
+      'الرصيد يجب ألا يتغير إلى 90 بل يظل 100 كما هو'
+    );
+    assert.ok(
+      result.acknowledgedKeys.includes('MANUAL_STOCK_ADJUSTMENT:adj-nosnap:1'),
+      'يجب اعتماد مفتاح العملية حتى لا يتكرر إرسالها'
+    );
+    const conflictLog = serverDb.auditLogs.find(a => a.action === 'SYNC_CONFLICT');
+    assert.ok(conflictLog, 'يجب تسجيل SYNC_CONFLICT في سجل التدقيق لغياب لقطة الأساس');
   });
 });

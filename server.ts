@@ -443,21 +443,44 @@ app.post('/api/sync/transactions', (req, res) => {
                     : null
                 );
 
+            const creator = payload.createdBy || payload.performedBy || 'غير محدد';
+            const opId = payload.operationId || recordId;
+
             if (
               typeof prevStockInPayload !== 'number' ||
               !Number.isFinite(prevStockInPayload)
             ) {
-              return res.status(409).json({
-                success: false,
-                code: 'SYNC_CONFLICT',
-                error: 'SYNC_CONFLICT',
-                message:
-                  'لا يمكن اعتماد التسوية اليدوية لأن الرصيد السابق للجهاز غير موجود أو غير صالح.'
+              serverDb.auditLogs.unshift({
+                id: `conflict-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                timestamp: new Date().toISOString(),
+                action: 'SYNC_CONFLICT',
+                category: cat,
+                itemId: cat,
+                details:
+                  `تم رفض تسوية جرد أوفلاين لأن الرصيد السابق للجهاز غير موجود أو غير صالح (غياب Snapshot). ` +
+                  `الرصيد الحالي على الخادم: ${oldStock} ، الرصيد الفعلي المطلوب: ${newActual}.`,
+                performedBy: creator,
+                createdBy: creator,
+                previousValue: oldStock,
+                newValue: newActual,
+                oldStock,
+                newStock: newActual,
+                newActualStock: newActual,
+                difference: newActual - oldStock,
+                reason: payload.reason || 'غياب لقطة الأساس (Snapshot)',
+                notes: 'تم رفض التسوية لعدم وجود لقطة الرصيد السابق وحماية رصيد الخادم.',
+                transactionId,
+                operationId: opId,
+                operationKey,
+                deviceId: payload.deviceId || deviceId || 'غير محدد',
+                operationType: 'MANUAL_STOCK_ADJUSTMENT'
               });
-            }
 
-            const creator = payload.createdBy || payload.performedBy || 'غير محدد';
-            const opId = payload.operationId || recordId;
+              modified = true;
+              tempProcessedKeys.add(operationKey);
+              acknowledgedKeys.push(operationKey);
+              continue;
+            }
 
             // Strict baseline snapshot conflict check: prevStockInPayload !== oldStock
             if (prevStockInPayload !== oldStock) {
@@ -574,6 +597,30 @@ app.post('/api/sync/transactions', (req, res) => {
             tempProcessedKeys.add(operationKey);
             acknowledgedKeys.push(operationKey);
             continue;
+          } else if (!existingOb && hasExistingMovements) {
+            // Rule 6: If no existingOb but running movements exist on server, do not allow silent opening balance creation!
+            serverDb.auditLogs.unshift({
+              id: `conflict-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              timestamp: new Date().toISOString(),
+              action: 'SYNC_CONFLICT',
+              category: cat,
+              itemId: cat,
+              details: `تعارض مزامنة: محاولة إدخال رصيد أول مدة جديد (${qty}) لصنف (${cat}) يحتوي بالفعل على حركات تشغيلية جارية على الخادم. تم رفض العملية وحماية الرصيد الحقيقي.`,
+              performedBy: creator,
+              createdBy: creator,
+              previousValue: stock?.currentStock,
+              newValue: qty,
+              reason: 'وجود حركات تشغيلية سابقة تمنع إدخال رصيد أول مدة متأخر',
+              transactionId,
+              operationId: opId,
+              operationKey,
+              deviceId: payload.deviceId || deviceId || 'غير محدد',
+              operationType: 'OPENING_BALANCE_SET'
+            });
+            modified = true;
+            tempProcessedKeys.add(operationKey);
+            acknowledgedKeys.push(operationKey);
+            continue;
           } else {
             serverDb.openingBalances = serverDb.openingBalances || ({} as any);
             serverDb.openingBalances[cat] = {
@@ -619,6 +666,7 @@ app.post('/api/sync/transactions', (req, res) => {
             if (stock) {
               stock.currentStock += payload.quantity;
               stock.totalReceived += payload.quantity;
+              stock.lastUpdated = new Date().toISOString();
             }
             modified = true;
           }
@@ -635,6 +683,7 @@ app.post('/api/sync/transactions', (req, res) => {
                 if (stock) {
                   stock.currentStock += diff;
                   stock.totalReceived += diff;
+                  stock.lastUpdated = new Date().toISOString();
                 }
               } else {
                 // Category changed on server: revert old category, apply new category
@@ -642,11 +691,13 @@ app.post('/api/sync/transactions', (req, res) => {
                 if (oldStock) {
                   oldStock.currentStock -= old.quantity;
                   oldStock.totalReceived -= old.quantity;
+                  oldStock.lastUpdated = new Date().toISOString();
                 }
                 const newStock = serverDb.stocks[payload.category as StockCategory];
                 if (newStock) {
                   newStock.currentStock += payload.quantity;
                   newStock.totalReceived += payload.quantity;
+                  newStock.lastUpdated = new Date().toISOString();
                 }
               }
               serverDb.supplies[idx] = { ...payload, syncStatus: 'synced' };
@@ -662,7 +713,8 @@ app.post('/api/sync/transactions', (req, res) => {
             const stock = serverDb.stocks[existing.category as StockCategory];
             if (stock) {
               stock.currentStock -= existing.quantity;
-              stock.totalReceived -= existing.quantity;
+              stock.totalReceived = Math.max(0, stock.totalReceived - existing.quantity);
+              stock.lastUpdated = new Date().toISOString();
             }
             serverDb.supplies.splice(idx, 1);
             modified = true;
@@ -688,6 +740,7 @@ app.post('/api/sync/transactions', (req, res) => {
             if (stock) {
               stock.currentStock -= payload.quantity;
               stock.totalDispensed += payload.quantity;
+              stock.lastUpdated = new Date().toISOString();
             }
             modified = true;
           }
@@ -704,6 +757,7 @@ app.post('/api/sync/transactions', (req, res) => {
                 if (stock) {
                   stock.currentStock -= diff;
                   stock.totalDispensed += diff;
+                  stock.lastUpdated = new Date().toISOString();
                 }
               } else {
                 // Category changed on server: refund old category, deduct from new category
@@ -711,11 +765,13 @@ app.post('/api/sync/transactions', (req, res) => {
                 if (oldStock) {
                   oldStock.currentStock += old.quantity;
                   oldStock.totalDispensed -= old.quantity;
+                  oldStock.lastUpdated = new Date().toISOString();
                 }
                 const newStock = serverDb.stocks[payload.category as StockCategory];
                 if (newStock) {
                   newStock.currentStock -= payload.quantity;
                   newStock.totalDispensed += payload.quantity;
+                  newStock.lastUpdated = new Date().toISOString();
                 }
               }
               serverDb.dispenses[idx] = { ...payload, syncStatus: 'synced' };

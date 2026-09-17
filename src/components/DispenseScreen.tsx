@@ -81,12 +81,15 @@ export const DispenseScreen: React.FC<DispenseScreenProps> = ({
       setCollectedAmount(db.officeSettings?.birthCertFee ?? 0);
     } else if (t === 'death') {
       setCategory('death_certificates');
+      setGender('غير محدد');
       setCollectedAmount(db.officeSettings?.deathCertFee ?? 0);
     } else if (t === 'birth_notification') {
       setCategory('birth_notifications');
+      setGender('غير محدد');
       setCollectedAmount(0);
     } else if (t === 'death_notification') {
       setCategory('death_notifications');
+      setGender('غير محدد');
       setCollectedAmount(0);
     }
   };
