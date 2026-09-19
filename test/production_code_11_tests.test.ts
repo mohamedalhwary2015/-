@@ -67,7 +67,7 @@ function createTestServerDb(resetId: string = 'test-reset-cycle-1'): DatabaseSch
   return db;
 }
 
-describe('التحقق المباشر من الكود الإنتاجي (Production Code Tests - 11 Scenarios)', () => {
+describe('التحقق المباشر من الكود الإنتاجي (Production Code Tests - 13 Direct Scenarios)', () => {
   before(async () => {
     await new Promise<void>((resolve) => {
       testServer = http.createServer(app).listen(0, '127.0.0.1', () => {
@@ -371,7 +371,7 @@ describe('التحقق المباشر من الكود الإنتاجي (Producti
   });
 
   // TEST 8: serverStock=150, mergeServerDataSafely() -> Expected: localStock=150 without reapplying movements
-  it('TEST 8: serverStock=150, mergeServerDataSafely() -> يجعل localStock: 150 دون إعادة تطبيق الحركات', () => {
+  it('TEST 8: serverStock=150 مع وجود Supply وDispense في serverData, mergeServerDataSafely() -> يجعل localStock: 150 دون إعادة تطبيق الحركات', () => {
     const localDb = createEmptyDatabase();
     localDb.stocks.birth_certificates.currentStock = 100;
 
@@ -385,14 +385,27 @@ describe('التحقق المباشر من الكود الإنتاجي (Producti
       documentNumber: 'SRV-001',
       syncStatus: 'synced'
     } as any);
+    serverDb.dispenses.push({
+      id: 'dsp-srv-1',
+      category: 'birth_certificates',
+      transactionType: 'birth',
+      quantity: 20,
+      citizenName: 'مواطن خادم',
+      date: '2026-03-01',
+      dispensedBy: 'أمين العهدة',
+      collectedAmount: 0,
+      syncStatus: 'synced'
+    } as any);
 
     const merged = mergeServerDataSafely(localDb, serverDb);
 
     assert.equal(
       merged.stocks.birth_certificates.currentStock,
       150,
-      'الرصيد يجب أن يكون 150 نقلاً عن الخادم المرجعي، ولا تتم إضافة الـ 50 لتصبح 200'
+      'الرصيد يجب أن يكون 150 نقلاً عن الخادم المرجعي، ولا يتم تطبيق الـ 50 توريد أو الـ 20 صرف على الرصيد الفعلي'
     );
+    assert.equal(merged.supplies.length, 1);
+    assert.equal(merged.dispenses.length, 1);
   });
 
   // TEST 9: old resetId -> Expected: STALE_RESET_ID
@@ -499,5 +512,142 @@ describe('التحقق المباشر من الكود الإنتاجي (Producti
     assert.equal(res.status, 400);
     const data = await res.json();
     assert.equal(data.error, 'INVALID_OPERATION_KEY');
+  });
+
+  // TEST 12: OPENING BALANCE مع وجود حركات سابقة (Supply / Dispense) -> Expected: SYNC_CONFLICT ولا يتغير currentStock
+  it('TEST 12: محاولة إدخال رصيد أول مدة لصنف به حركات سابقة دون رصيد سابق -> SYNC_CONFLICT ولا يتغير currentStock', async () => {
+    const srvDb = createTestServerDb('cycle-t12');
+    // صنف به توريد قائم وحركات جارية، ولكن لم يُسجل له openingBalance
+    srvDb.stocks.birth_certificates.currentStock = 50;
+    srvDb.stocks.birth_certificates.totalReceived = 50;
+    srvDb.supplies.push({
+      id: 'sup-prior-1',
+      category: 'birth_certificates',
+      quantity: 50,
+      date: '2026-03-01',
+      documentNumber: 'DOC-PRIOR',
+      receivedBy: 'أمين العهدة',
+      supplierSource: 'المديرية',
+      syncStatus: 'synced'
+    } as any);
+    delete (srvDb.openingBalances as any).birth_certificates;
+    setServerDbForTesting(srvDb, new Set());
+
+    const tx: SyncTransactionItem = {
+      transactionId: 'tx-prod-12',
+      operationKey: 'OPENING_BALANCE_SET:ob-prod-12:1',
+      recordId: 'ob-prod-12',
+      operationType: 'OPENING_BALANCE_SET',
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      deviceId: 'client-late-ob',
+      resetBoundary: { resetId: 'cycle-t12', resetTimestamp: new Date().toISOString(), resetAt: new Date().toISOString(), resetBy: 'admin' },
+      payload: {
+        category: 'birth_certificates',
+        quantity: 100, // Client tries to set opening balance of 100 late
+        inventoryDate: '2026-03-02',
+        inventoryKeeper: 'موظف متأخر'
+      }
+    };
+
+    const res = await fetch(`${baseUrl}/api/sync/transactions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        resetId: 'cycle-t12',
+        transactions: [tx]
+      })
+    });
+
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.success, true);
+    // currentStock must remain 50, NOT change to 100 or 150
+    assert.equal(data.serverData.stocks.birth_certificates.currentStock, 50);
+    assert.equal(data.serverData.openingBalances.birth_certificates, undefined);
+
+    const updatedServerDb = getServerDbForTesting();
+    assert.equal(updatedServerDb.stocks.birth_certificates.currentStock, 50);
+    const conflictLog = updatedServerDb.auditLogs.find(a => a.action === 'SYNC_CONFLICT');
+    assert.ok(conflictLog);
+    assert.match(conflictLog.details, /حركات تشغيلية جارية/);
+  });
+
+  // TEST 13: Atomic Batch Execution & Idempotency
+  it('TEST 13: Atomic Batch مع حركات متعددة -> معالجة ذرية وعدم تكرار الحركات عند الإعادة', async () => {
+    const srvDb = createTestServerDb('cycle-t13');
+    srvDb.stocks.birth_certificates.currentStock = 100;
+    setServerDbForTesting(srvDb, new Set());
+
+    const tx1: SyncTransactionItem = {
+      transactionId: 'batch-tx-1',
+      operationKey: 'SUPPLY_ADD:sup-b1:1',
+      recordId: 'sup-b1',
+      operationType: 'SUPPLY_ADD',
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      deviceId: 'client-batch',
+      resetBoundary: { resetId: 'cycle-t13', resetTimestamp: new Date().toISOString(), resetAt: new Date().toISOString(), resetBy: 'admin' },
+      payload: {
+        id: 'sup-b1',
+        category: 'birth_certificates',
+        quantity: 30,
+        date: '2026-03-01',
+        documentNumber: 'DOC-B1'
+      }
+    };
+
+    const tx2: SyncTransactionItem = {
+      transactionId: 'batch-tx-2',
+      operationKey: 'DISPENSE_ADD:dsp-b1:1',
+      recordId: 'dsp-b1',
+      operationType: 'DISPENSE_ADD',
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      deviceId: 'client-batch',
+      resetBoundary: { resetId: 'cycle-t13', resetTimestamp: new Date().toISOString(), resetAt: new Date().toISOString(), resetBy: 'admin' },
+      payload: {
+        id: 'dsp-b1',
+        category: 'birth_certificates',
+        quantity: 10,
+        date: '2026-03-01',
+        transactionType: 'birth'
+      }
+    };
+
+    // First send: both should execute -> 100 + 30 - 10 = 120
+    const res1 = await fetch(`${baseUrl}/api/sync/transactions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        resetId: 'cycle-t13',
+        transactions: [tx1, tx2]
+      })
+    });
+
+    assert.equal(res1.status, 200);
+    const data1 = await res1.json();
+    assert.equal(data1.success, true);
+    assert.equal(data1.serverData.stocks.birth_certificates.currentStock, 120);
+    assert.equal(data1.serverData.supplies.length, 1);
+    assert.equal(data1.serverData.dispenses.length, 1);
+
+    // Second send of the EXACT SAME BATCH -> Idempotency skips already processed keys
+    const res2 = await fetch(`${baseUrl}/api/sync/transactions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        resetId: 'cycle-t13',
+        transactions: [tx1, tx2]
+      })
+    });
+
+    assert.equal(res2.status, 200);
+    const data2 = await res2.json();
+    assert.equal(data2.success, true);
+    // Stock remains 120, NOT 140!
+    assert.equal(data2.serverData.stocks.birth_certificates.currentStock, 120);
+    assert.equal(data2.serverData.supplies.length, 1);
+    assert.equal(data2.serverData.dispenses.length, 1);
   });
 });
