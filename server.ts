@@ -1125,6 +1125,9 @@ app.post('/api/database/factory-reset', (req, res) => {
     saveServerDb(cleanDb);
 
     // Wipe processed keys
+    if (memoryProcessedKeys) {
+      memoryProcessedKeys = new Set();
+    }
     if (fs.existsSync(PROCESSED_KEYS_FILE)) {
       fs.unlinkSync(PROCESSED_KEYS_FILE);
     }

@@ -650,4 +650,133 @@ describe('التحقق المباشر من الكود الإنتاجي (Producti
     assert.equal(data2.serverData.supplies.length, 1);
     assert.equal(data2.serverData.dispenses.length, 1);
   });
+
+  // TEST 14: Production Factory Reset Endpoint & Stale Device Rejection
+  it('TEST 14: استدعاء POST /api/database/factory-reset الحقيقي -> مسح البيانات، resetId جديد، ورفض الجهاز القديم بـ STALE_RESET_ID', async () => {
+    const srvDb = createTestServerDb('cycle-old-factory');
+    srvDb.stocks.birth_certificates.currentStock = 80;
+    srvDb.stocks.birth_certificates.totalReceived = 100;
+    srvDb.stocks.birth_certificates.totalDispensed = 20;
+    srvDb.supplies.push({
+      id: 'sup-pre-reset',
+      category: 'birth_certificates',
+      quantity: 100,
+      date: '2026-03-01',
+      documentNumber: 'DOC-RESET',
+      syncStatus: 'synced'
+    } as any);
+    srvDb.dispenses.push({
+      id: 'dsp-pre-reset',
+      category: 'birth_certificates',
+      transactionType: 'birth',
+      quantity: 20,
+      citizenName: 'مواطن قبل التصفير',
+      date: '2026-03-01',
+      syncStatus: 'synced'
+    } as any);
+    const initialKeys = new Set(['SUPPLY_ADD:sup-pre-reset:1', 'DISPENSE_ADD:dsp-pre-reset:1']);
+    setServerDbForTesting(srvDb, initialKeys);
+
+    // Call real production endpoint
+    const resetRes = await fetch(`${baseUrl}/api/database/factory-reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ performedBy: 'المسئول الرقابي' })
+    });
+
+    assert.equal(resetRes.status, 200);
+    const resetJson = await resetRes.json();
+    assert.equal(resetJson.success, true);
+    assert.ok(resetJson.resetBoundary.resetId);
+    assert.notEqual(resetJson.resetBoundary.resetId, 'cycle-old-factory');
+
+    // Verify wiped database state
+    const afterResetDb = getServerDbForTesting();
+    assert.equal(afterResetDb.supplies.length, 0, 'supplies أصبحت فارغة');
+    assert.equal(afterResetDb.dispenses.length, 0, 'dispenses أصبحت فارغة');
+    assert.equal(afterResetDb.stocks.birth_certificates.currentStock, 0, 'currentStock أصبح 0');
+    assert.equal(afterResetDb.stocks.birth_certificates.totalReceived, 0, 'totalReceived أصبح 0');
+    assert.equal(afterResetDb.stocks.birth_certificates.totalDispensed, 0, 'totalDispensed أصبح 0');
+
+    // Verify old offline device is rejected with STALE_RESET_ID for movements
+    const oldSupTx: SyncTransactionItem = {
+      transactionId: 'tx-old-sup',
+      operationKey: 'SUPPLY_ADD:sup-old-1:1',
+      recordId: 'sup-old-1',
+      operationType: 'SUPPLY_ADD',
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      deviceId: 'device-offline-old',
+      resetBoundary: { resetId: 'cycle-old-factory', resetTimestamp: '2026-03-01T00:00:00.000Z', resetAt: '2026-03-01T00:00:00.000Z', resetBy: 'admin' },
+      payload: { category: 'birth_certificates', quantity: 50 }
+    };
+
+    const oldResSup = await fetch(`${baseUrl}/api/sync/transactions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        resetId: 'cycle-old-factory',
+        transactions: [oldSupTx]
+      })
+    });
+    assert.equal(oldResSup.status, 409);
+    const oldSupData = await oldResSup.json();
+    assert.equal(oldSupData.error, 'STALE_RESET_ID');
+
+    // Verify old offline device cannot send DISPENSE
+    const oldDspTx: SyncTransactionItem = {
+      transactionId: 'tx-old-dsp',
+      operationKey: 'DISPENSE_ADD:dsp-old-1:1',
+      recordId: 'dsp-old-1',
+      operationType: 'DISPENSE_ADD',
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      deviceId: 'device-offline-old',
+      resetBoundary: { resetId: 'cycle-old-factory', resetTimestamp: '2026-03-01T00:00:00.000Z', resetAt: '2026-03-01T00:00:00.000Z', resetBy: 'admin' },
+      payload: { category: 'birth_certificates', quantity: 5 }
+    };
+
+    const oldResDsp = await fetch(`${baseUrl}/api/sync/transactions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        resetId: 'cycle-old-factory',
+        transactions: [oldDspTx]
+      })
+    });
+    assert.equal(oldResDsp.status, 409);
+    const oldDspData = await oldResDsp.json();
+    assert.equal(oldDspData.error, 'STALE_RESET_ID');
+
+    // Verify old offline device cannot send MANUAL_STOCK_ADJUSTMENT
+    const oldAdjTx: SyncTransactionItem = {
+      transactionId: 'tx-old-adj',
+      operationKey: 'MANUAL_STOCK_ADJUSTMENT:adj-old-1:1',
+      recordId: 'adj-old-1',
+      operationType: 'MANUAL_STOCK_ADJUSTMENT',
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      deviceId: 'device-offline-old',
+      resetBoundary: { resetId: 'cycle-old-factory', resetTimestamp: '2026-03-01T00:00:00.000Z', resetAt: '2026-03-01T00:00:00.000Z', resetBy: 'admin' },
+      payload: { category: 'birth_certificates', previousStock: 80, newActualStock: 70 }
+    };
+
+    const oldResAdj = await fetch(`${baseUrl}/api/sync/transactions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        resetId: 'cycle-old-factory',
+        transactions: [oldAdjTx]
+      })
+    });
+    assert.equal(oldResAdj.status, 409);
+    const oldAdjData = await oldResAdj.json();
+    assert.equal(oldAdjData.error, 'STALE_RESET_ID');
+
+    // Server database remains completely wiped and untouched
+    const finalDb = getServerDbForTesting();
+    assert.equal(finalDb.supplies.length, 0);
+    assert.equal(finalDb.dispenses.length, 0);
+    assert.equal(finalDb.stocks.birth_certificates.currentStock, 0);
+  });
 });
