@@ -98,7 +98,7 @@ export const BackupRestoreScreen: React.FC<BackupRestoreScreenProps> = ({
         timestamp: new Date().toISOString(),
         action: 'استرجاع يدوي صريح لنسخة احتياطية (Restore)',
         details: `تم استرجاع نسخة مؤرخة في ${restoredDb.lastUpdated || 'تاريخ غير محدد'} بواسطة المستخدم`,
-        performedBy: db.officeSettings?.currentEmployee || 'مدير النظام'
+        performedBy: db.officeSettings?.currentEmployee || 'غير محدد'
       });
 
       // Step 5: Save database safely
@@ -131,7 +131,7 @@ export const BackupRestoreScreen: React.FC<BackupRestoreScreenProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          performedBy: db.officeSettings?.currentEmployee || 'مدير النظام'
+          performedBy: db.officeSettings?.currentEmployee || 'غير محدد'
         })
       });
     } catch (e) {
@@ -139,7 +139,7 @@ export const BackupRestoreScreen: React.FC<BackupRestoreScreenProps> = ({
     }
 
     // Client complete reset & reset boundary establishment
-    executeFactoryReset(db.officeSettings?.currentEmployee || 'مدير النظام');
+    executeFactoryReset(db.officeSettings?.currentEmployee || 'غير محدد');
     setShowResetConfirm(false);
     setResetConfirmText('');
     setStatusMessage({

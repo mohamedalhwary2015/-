@@ -503,7 +503,7 @@ export function diagnoseDatabase(db: DatabaseSchema): DiagnosticResult {
  * Safely removes detected duplicate transactions by keeping only the earliest verified instance.
  * STRICT: Does NOT arbitrarily change currentStock!
  */
-export function safelyPurgeDuplicateTransactions(db: DatabaseSchema, operatorName: string = 'مدير النظام'): {
+export function safelyPurgeDuplicateTransactions(db: DatabaseSchema, operatorName: string = 'غير محدد'): {
   removedSupplies: number;
   removedDispenses: number;
 } {
@@ -556,7 +556,7 @@ export function purgeSingleSuspectedRecord(
   recordId: string,
   recordType: 'supply' | 'dispense',
   adjustStock: boolean,
-  operatorName: string = 'مدير النظام'
+  operatorName: string = 'غير محدد'
 ): { success: boolean; message: string } {
   const now = new Date().toISOString();
   const txId = generateStableId('tx-del');
